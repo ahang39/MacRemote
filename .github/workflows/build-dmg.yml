@@ -1,0 +1,55 @@
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    name: Build DMG / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          brew install cmake ninja pkg-config opus openssl@4 json-c
+
+      - name: Build native app and run tests
+        shell: bash
+        env:
+          MACREMOTE_TARGET_ARCH: ${{ matrix.arch }}
+          MACREMOTE_BUILD_JOBS: 2
+          MACREMOTE_SIGN_IDENTITY: "-"
+        run: |
+          set -euo pipefail
+          ./tools/build-dev-app.sh
+
+      - name: Package and audit DMG
+        shell: bash
+        env:
+          MACREMOTE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          app=$(find "$HOME/Library/Caches/MacRemote/product" -maxdepth 1 -type d -name 'MacRemote-*.app' | head -n 1)
+          test -n "$app"
+          python3 tools/package-dmg.py --app "$app" --arch "$MACREMOTE_ARCH" --out "$RUNNER_TEMP/MacRemote-macos-$MACREMOTE_ARCH-adhoc.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: ${{ runner.temp }}/MacRemote-macos-${{ matrix.arch }}-adhoc.dmg
+          if-no-files-found: error
+          retention-days: 7

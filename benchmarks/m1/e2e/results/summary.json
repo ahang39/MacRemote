@@ -1,0 +1,36 @@
+{
+  "iron": {
+    "n_success": 5,
+    "n_total": 5,
+    "screen_source": "synthetic moving rectangles",
+    "median": {
+      "handshake_ms": 41,
+      "first_paint_ms": 250,
+      "paint_updates": 45,
+      "tx_client_bytes": 4388,
+      "tx_server_bytes": 21720857,
+      "client_cpu_s": 0.211,
+      "server_cpu_s": 0.408,
+      "client_peak_rss_mib": 78.391,
+      "server_peak_rss_mib": 30.672,
+      "active_duration_ms": 5105
+    }
+  },
+  "free": {
+    "n_success": 5,
+    "n_total": 5,
+    "screen_source": "macOS physical screen capture",
+    "median": {
+      "handshake_ms": 16,
+      "first_paint_ms": 46,
+      "paint_updates": 141,
+      "tx_client_bytes": 15226,
+      "tx_server_bytes": 7354115,
+      "client_cpu_s": 0.428,
+      "server_cpu_s": 0.909,
+      "client_peak_rss_mib": 76.859,
+      "server_peak_rss_mib": 74.922,
+      "active_duration_ms": 5011
+    }
+  }
+}

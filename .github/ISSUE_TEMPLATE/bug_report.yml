@@ -1,0 +1,33 @@
+name: Bug report
+description: Report reproducible MacRemote behavior (no private credentials or logs)
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "Please remove private IPs, credentials, certificates, and personal content before sharing logs or screenshots."
+  - type: input
+    id: version
+    attributes:
+      label: MacRemote commit or version
+      placeholder: "git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS / client environment
+      placeholder: "macOS 15 ARM64; Windows mstsc"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, expected result, and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics (optional)
+      description: No usernames, IPs, passwords, certificates, clipboard data or screenshots with personal information.

@@ -1,0 +1,28 @@
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -218,10 +218,25 @@
+ 	return mac_shadow_list_displays(monitors, nullptr, nullptr, maxMonitors);
+ }
+ 
++/* Called by the MacRemote executable after shadow_server_init.
++ * Ownership: the callback consumes the input CGEvent and returns an owned
++ * replacement CGEvent, or NULL when a rule absorbs the event. */
++static CGEventRef (*mac_shadow_input_filter)(CGEventRef) = NULL;
++
++void mac_shadow_set_input_filter(CGEventRef (*filter)(CGEventRef))
++{
++	mac_shadow_input_filter = filter;
++}
++
+ static BOOL mac_shadow_post(CGEventRef event)
+ {
+ 	if (!event)
+ 		return FALSE;
++
++	if (mac_shadow_input_filter)
++		event = mac_shadow_input_filter(event);
++	if (!event)
++		return TRUE;
+ 
+ 	CGEventPost(kCGHIDEventTap, event);
+ 	CFRelease(event);

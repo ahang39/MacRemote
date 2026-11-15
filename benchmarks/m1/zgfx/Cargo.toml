@@ -1,0 +1,13 @@
+[package]
+name = "macremote-zgfx-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironrdp-graphics = { git = "https://github.com/Devolutions/IronRDP.git", rev = "0a79fd2178c79b3d8920b6e76f2a9da5db6331ca", version = "0.11.0" }
+libloading = "0.8.9"
+libc = "0.2"
+
+[profile.release]
+strip = "none"

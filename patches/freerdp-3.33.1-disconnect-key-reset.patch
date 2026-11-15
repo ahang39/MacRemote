@@ -1,0 +1,24 @@
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -1407,10 +1407,17 @@
+ 	WINPR_ASSERT(mac);
+ 
+ 	EnterCriticalSection(&mac->clientLock);
+-	if ((mac->clients > 0) && (--mac->clients == 0) && (mac->awake != kIOPMNullAssertionID))
+-	{
+-		(void)IOPMAssertionRelease(mac->awake);
+-		mac->awake = kIOPMNullAssertionID;
++	if ((mac->clients > 0) && (--mac->clients == 0))
++	{
++		/* Every remote session has ended. Do not leak a held modifier into
++		 * a later mstsc connection, including with no Karabiner installed. */
++		mac->modifiers = 0;
++		mac->buttonsDown = 0;
++		if (mac->awake != kIOPMNullAssertionID)
++		{
++			(void)IOPMAssertionRelease(mac->awake);
++			mac->awake = kIOPMNullAssertionID;
++		}
+ 	}
+ 	LeaveCriticalSection(&mac->clientLock);
+ }

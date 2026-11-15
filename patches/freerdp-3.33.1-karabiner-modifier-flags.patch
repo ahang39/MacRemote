@@ -1,0 +1,72 @@
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -36,6 +36,7 @@
+ #include <freerdp/log.h>
+ 
+ #include <ApplicationServices/ApplicationServices.h>
++#include <IOKit/hidsystem/IOLLEvent.h>
+ 
+ #ifdef WITH_PAM
+ #include <security/pam_appl.h>
+@@ -136,6 +137,39 @@
+ 	}
+ }
+ 
++/* Karabiner's CGEventTap fallback checks the side-specific NX_DEVICE*
++ * bits to distinguish flagsChanged key_down from key_up. Supplying only
++ * kCGEventFlagMaskControl/Shift/etc makes it treat every synthetic modifier
++ * as released, even when our RDP client just pressed it. */
++static CGEventFlags mac_shadow_modifier_side_flag(CGKeyCode keycode)
++{
++	switch (keycode)
++	{
++		case MAC_VK_CONTROL: return NX_DEVICELCTLKEYMASK;
++		case MAC_VK_RIGHT_CONTROL: return NX_DEVICERCTLKEYMASK;
++		case MAC_VK_SHIFT: return NX_DEVICELSHIFTKEYMASK;
++		case MAC_VK_RIGHT_SHIFT: return NX_DEVICERSHIFTKEYMASK;
++		case MAC_VK_OPTION: return NX_DEVICELALTKEYMASK;
++		case MAC_VK_RIGHT_OPTION: return NX_DEVICERALTKEYMASK;
++		case MAC_VK_COMMAND: return NX_DEVICELCMDKEYMASK;
++		case MAC_VK_RIGHT_COMMAND: return NX_DEVICERCMDKEYMASK;
++		default: return 0;
++	}
++}
++
++static CGEventFlags mac_shadow_modifier_sides(CGEventFlags modifier)
++{
++	if (modifier == kCGEventFlagMaskControl)
++		return NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK;
++	if (modifier == kCGEventFlagMaskShift)
++		return NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK;
++	if (modifier == kCGEventFlagMaskAlternate)
++		return NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK;
++	if (modifier == kCGEventFlagMaskCommand)
++		return NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK;
++	return 0;
++}
++
+ /* The active displays, with their monitor rectangles moved so that the
+  * leftmost and topmost one start at 0 (the shadow surface cannot start
+  * below 0); bounds are left in global display coordinates. */
+@@ -264,7 +298,20 @@
+ 	const CGEventFlags modifier = mac_shadow_modifier_flag((CGKeyCode)keycode);
+ 	if (modifier)
+ 	{
+-		if (down)
++		const CGEventFlags side = mac_shadow_modifier_side_flag((CGKeyCode)keycode);
++		if (side)
++		{
++			/* Preserve the other side while one side is released. */
++			if (down)
++				mac->modifiers |= side;
++			else
++				mac->modifiers &= ~side;
++			if (mac->modifiers & mac_shadow_modifier_sides(modifier))
++				mac->modifiers |= modifier;
++			else
++				mac->modifiers &= ~modifier;
++		}
++		else if (down)
+ 			mac->modifiers |= modifier;
+ 		else
+ 			mac->modifiers &= ~modifier;

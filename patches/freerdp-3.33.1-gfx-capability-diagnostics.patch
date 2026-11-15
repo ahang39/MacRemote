@@ -1,0 +1,33 @@
+--- a/server/shadow/shadow_client.c
++++ b/server/shadow/shadow_client.c
+@@ -1008,6 +1008,16 @@
+ #endif
+ 	}
+ 
++	WLog_INFO(TAG,
++	          "MacRemote RDPGFX selected version=0x%08" PRIx32
++	          " flags=0x%08" PRIx32 " codecs AVC420=%d AVC444=%d AVC444v2=%d size=%" PRIu32
++	          "x%" PRIu32,
++	          client->confirmedCaps.version, client->confirmedCaps.flags,
++	          freerdp_settings_get_bool(clientSettings, FreeRDP_GfxH264),
++	          freerdp_settings_get_bool(clientSettings, FreeRDP_GfxAVC444),
++	          freerdp_settings_get_bool(clientSettings, FreeRDP_GfxAVC444v2),
++	          freerdp_settings_get_uint32(clientSettings, FreeRDP_DesktopWidth),
++	          freerdp_settings_get_uint32(clientSettings, FreeRDP_DesktopHeight));
+ 	return rc;
+ }
+ 
+@@ -1404,6 +1414,13 @@
+ 	/* rc > 0 means new data */
+ 	if (rc > 0)
+ 	{
++		if ((cmdstart->frameId <= 3) || ((cmdstart->frameId % 300) == 0))
++			WLog_INFO(TAG,
++			          "MacRemote AVC444 frame=%" PRIu32 " codec=0x%04" PRIx16
++			          " size=%" PRIu16 "x%" PRIu16 " stride=%" PRIu32
++			          " op=%u main=%" PRIu32 " aux=%" PRIu32,
++			          cmdstart->frameId, cmd->codecId, nWidth, nHeight, nSrcStep,
++			          avc444.LC, avc444.bitstream[0].length, avc444.bitstream[1].length);
+ 		avc444.cbAvc420EncodedBitstream1 = rdpgfx_estimate_h264_avc420(&avc444.bitstream[0]);
+ 		cmd->extra = (void*)&avc444;
+ 		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,

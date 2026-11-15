@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Future Rust/Swift build outputs
+/target/
+/.build/
+/DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.key
+*.pem
+/logs/
+*.log
+
+# macOS app/CMake development artifacts (built outside this repository)
+*.app/
+/CMakeFiles/
+/CMakeCache.txt
+/Testing/
+/build/
+
+# RDP auth secrets and locally generated certificates
+*.sam
+*.crt
+*.pfx
+*.p12
+credentials.*
+
+# Editor and local test caches
+__pycache__/
+.pytest_cache/
+.swiftpm/
+.idea/
+.vscode/
+*.dmg
+*.zip

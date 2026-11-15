@@ -1,0 +1,42 @@
+--- a/server/shadow/shadow_channels.c
++++ b/server/shadow/shadow_channels.c
+@@ -21,6 +21,19 @@
+ #include "shadow.h"
+ 
+ #include "shadow_channels.h"
++#include <freerdp/channels/cliprdr.h>
++
++/* Optional MacRemote app callbacks; keep the upstream RDP channel manager
++ * independent of Objective-C pasteboard implementation. */
++static UINT (*macremote_clipboard_connect)(rdpShadowClient*) = nullptr;
++static void (*macremote_clipboard_disconnect)(rdpShadowClient*) = nullptr;
++
++FREERDP_API void shadow_channels_set_clipboard_hooks(UINT (*on_connect)(rdpShadowClient*),
++                                         void (*on_disconnect)(rdpShadowClient*))
++{
++    macremote_clipboard_connect = on_connect;
++    macremote_clipboard_disconnect = on_disconnect;
++}
+ 
+ UINT shadow_client_channels_post_connect(rdpShadowClient* client)
+ {
+@@ -48,11 +61,19 @@
+ 	if (shadow_client_rdpgfx_init(client) < 0)
+ 		return ERROR_NOT_READY;
+ 
++	if (macremote_clipboard_connect &&
++	    WTSVirtualChannelManagerIsChannelJoined(client->vcm, CLIPRDR_SVC_CHANNEL_NAME))
++	{
++		(void)macremote_clipboard_connect(client);
++	}
++
+ 	return CHANNEL_RC_OK;
+ }
+ 
+ void shadow_client_channels_free(rdpShadowClient* client)
+ {
++    if (macremote_clipboard_disconnect)
++        macremote_clipboard_disconnect(client);
+ 	shadow_client_rdpgfx_uninit(client);
+ 	shadow_client_audin_uninit(client);
+ 	shadow_client_rdpsnd_uninit(client);

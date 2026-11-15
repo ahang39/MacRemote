@@ -1,0 +1,56 @@
+name: Source checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS ARM64 / source tests
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Source and script checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show --format= --check HEAD
+          python3 tools/check-public-source.py
+          zsh -n tools/build-dev-app.sh
+          python3 -c "import ast, pathlib; ast.parse(pathlib.Path('tools/bundle-runtime.py').read_text()); ast.parse(pathlib.Path('tests/test_cli.py').read_text())"
+          grep -q 'PolyForm Noncommercial License 1.0.0' LICENSE
+
+      - name: Swift UI typecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun swiftc -parse-as-library -typecheck -swift-version 5 \
+            apps/macos/MacRemoteApp.swift apps/macos/ListenPortSettings.swift
+
+      - name: Port preference regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun swiftc -O -parse-as-library \
+            apps/macos/ListenPortSettings.swift tests/test_port_settings.swift \
+            -o "$RUNNER_TEMP/test-port-settings"
+          "$RUNNER_TEMP/test-port-settings"
+
+      - name: Karabiner compatibility regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -Wall -Wextra -Werror -x objective-c \
+            tests/test_karabiner_compat.m src/input/karabiner_compat.m \
+            -framework ApplicationServices -framework AppKit \
+            -framework Foundation -framework Carbon -framework IOKit \
+            -o "$RUNNER_TEMP/test-karabiner"
+          "$RUNNER_TEMP/test-karabiner"
+
+# Source checks only. Do not upload license-incompatible developer binaries.

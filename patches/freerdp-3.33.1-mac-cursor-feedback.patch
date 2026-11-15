@@ -1,0 +1,30 @@
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -956,10 +956,15 @@
+ static void mac_shadow_cursor_send_position(macShadowSubsystem* mac, UINT64 now)
+ {
+ 	EnterCriticalSection(&mac->clientLock);
+ 	const UINT64 input = mac->pointerInput;
+ 	LeaveCriticalSection(&mac->clientLock);
++	/* Do not overwrite the client's absolute cursor with a stale Quartz
++	 * position during a remotely controlled session. Delayed input and screen
++	 * frames can cause a cursor-position PDU to jump the Windows pointer. */
++	if (input != 0)
++		return;
+ 	if (now - input < MAC_SHADOW_CURSOR_QUIET_MS)
+ 		return;
+ 
+ 	CGEventRef event = CGEventCreate(nullptr);
+ 	if (!event)
+@@ -1411,10 +1416,11 @@
+ 	{
+ 		/* Every remote session has ended. Do not leak a held modifier into
+ 		 * a later mstsc connection, including with no Karabiner installed. */
+ 		mac->modifiers = 0;
+ 		mac->buttonsDown = 0;
++		mac->pointerInput = 0; /* reset cursor ownership for the next session */
+ 		if (mac->awake != kIOPMNullAssertionID)
+ 		{
+ 			(void)IOPMAssertionRelease(mac->awake);
+ 			mac->awake = kIOPMNullAssertionID;
+ 		}

@@ -1,0 +1,5 @@
+active_duration_ms,client_cpu_s,client_exit,client_height,client_peak_rss_mib,client_width,error_tail,first_paint_ms,handshake_ms,paint_updates,proxy_error,server,server_cpu_s,server_peak_rss_mib,server_status,trial,tx_client_bytes,tx_server_bytes,wall_s
+5001,0.2815,0,1080,76.75,1920,,1698,43,49,,free,0.4766,75.766,-15,1,8230,1274068,5.127
+5005,0.0995,0,1080,75.344,1920,,,42,0,,iron,0.0682,16.594,-15,2,4388,1265737,5.121
+5019,0.4214,0,1080,76.797,1920,,1697,25,116,,free,0.8212,74.734,-15,2,13318,1265876,5.118
+5012,0.09,0,1080,73.422,1920,,2590,32,3,,iron,0.0791,14.344,-15,1,4388,1265737,5.091

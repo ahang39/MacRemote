@@ -1,0 +1,44 @@
+--- a/server/shadow/shadow_client.c
++++ b/server/shadow/shadow_client.c
+@@ -2946,12 +2946,22 @@
+ 		/* a frame that waits for an acknowledgement also goes out after a stall */
+ 		const DWORD timeout = client->encoder->gfxHeld ? 100 : INFINITE;
+ 		status = WaitForMultipleObjects(nCount, events, FALSE, timeout);
+ 
+ 		if (status == WAIT_FAILED)
+ 			goto fail;
++
++		/* Handle pending input before potentially expensive screen encoding.
++		 * The surface update may take tens of milliseconds in Classic NSCodec;
++		 * reading the transport only afterwards delays mouse and key events. */
++		WINPR_ASSERT(peer->CheckFileDescriptor);
++		if (!peer->CheckFileDescriptor(peer))
++		{
++			WLog_ERR(TAG, "Failed to check FreeRDP file descriptor");
++			goto fail;
++		}
+ 
+ 		if (UpdateEvent && (WaitForSingleObject(UpdateEvent, 0) == WAIT_OBJECT_0))
+ 		{
+ 			/* The UpdateEvent means to start sending current frame. It is
+ 			 * triggered from subsystem implementation and it should ensure
+ 			 * that the screen and primary surface meta data (width, height,
+@@ -3009,18 +3019,12 @@
+ 			 * The return value of shadow_multiclient_consume is whether or not
+ 			 * the subscriber really consumes the event. It's not cared currently.
+ 			 */
+ 			(void)shadow_multiclient_consume(UpdateSubscriber);
+ 		}
+ 
+-		WINPR_ASSERT(peer->CheckFileDescriptor);
+-		if (!peer->CheckFileDescriptor(peer))
+-		{
+-			WLog_ERR(TAG, "Failed to check FreeRDP file descriptor");
+-			goto fail;
+-		}
+ 
+ 		if (client->activated &&
+ 		    WTSVirtualChannelManagerIsChannelJoined(client->vcm, DRDYNVC_SVC_CHANNEL_NAME))
+ 		{
+ 			switch (WTSVirtualChannelManagerGetDrdynvcState(client->vcm))
+ 			{

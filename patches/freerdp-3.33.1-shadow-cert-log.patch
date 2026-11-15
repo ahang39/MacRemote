@@ -1,0 +1,16 @@
+diff --git a/server/shadow/shadow_server.c b/server/shadow/shadow_server.c
+index 08c2367..72c00b0 100644
+--- a/server/shadow/shadow_server.c
++++ b/server/shadow/shadow_server.c
+@@ -1006,8 +1006,9 @@ static BOOL shadow_server_read_pem(rdpShadowServer* server)
+ 	rc = TRUE;
+ 
+ out_fail:
+-	WLog_ERR(TAG, "Certificate PEM %s valid, but some properties failed to be extracted",
+-	         server->CertificateFile);
++	if (!rc)
++		WLog_ERR(TAG, "Certificate PEM %s valid, but some properties failed to be extracted",
++		         server->CertificateFile);
+ 	return rc;
+ }
+ 
