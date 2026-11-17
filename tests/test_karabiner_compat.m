@@ -285,6 +285,25 @@ int main(void)
     out=filter(key(kVK_ANSI_A,NO,0));
     REQUIRE(out!=NULL); CFRelease(out);
 
+    // Malformed JSON fields cannot crash the loader or broaden a rule.
+    NSDictionary *unsupportedFrom = @{@"type": @"basic",
+        @"from": @{@"key_code": @"a", @"unknown": @YES},
+        @"to": @[@{@"key_code": @"x"}]};
+    NSDictionary *malformed = @{@"profiles": @[
+        @{@"selected": NSNull.null},
+        @{@"selected": @YES, @"complex_modifications": @{@"rules": @[
+            @{@"enabled": NSNull.null, @"manipulators": @[rawA]},
+            @{@"manipulators": @[unsupportedFrom]}
+        ]}}
+    ]};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:malformed options:0 error:nil];
+    REQUIRE([json writeToFile:path atomically:YES]);
+    mr_compat_initialize(path.UTF8String);
+    out = filter(key(kVK_ANSI_A, YES, 0));
+    REQUIRE(out != NULL);
+    REQUIRE(CGEventGetIntegerValueField(out, kCGKeyboardEventKeycode) == kVK_ANSI_A);
+    CFRelease(out);
+
     /* Two RDP clients can hold the same Control key concurrently. Releasing
      * one must not clear Control for the other. */
     write_rules(path,@[copy]);

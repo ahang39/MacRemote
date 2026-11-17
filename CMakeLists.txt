@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
-project(MacRemote VERSION 0.1.0 LANGUAGES C OBJC)
+set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS")
+project(MacRemote VERSION 0.2.0 LANGUAGES C OBJC)
 if(NOT APPLE)
   message(FATAL_ERROR "MacRemote requires macOS")
 endif()
@@ -8,7 +9,6 @@ if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|x86_64)$")
 endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS")
 set(FREERDP_SOURCE_ROOT "" CACHE PATH "Pinned FreeRDP 3.33.1 checkout")
 set(FREERDP_BUILD_ROOT "" CACHE PATH "Matching FreeRDP 3.33.1 build")
 if(NOT IS_DIRECTORY "${FREERDP_SOURCE_ROOT}" OR
@@ -16,88 +16,101 @@ if(NOT IS_DIRECTORY "${FREERDP_SOURCE_ROOT}" OR
   message(FATAL_ERROR "Set FREERDP_SOURCE_ROOT and FREERDP_BUILD_ROOT")
 endif()
 
-set(SRC "${FREERDP_SOURCE_ROOT}")
-set(BLD "${FREERDP_BUILD_ROOT}")
-set(IMPL "${BLD}/server/shadow/Mac/libfreerdp-shadow-subsystem-impl.a")
-set(LIBS
-  "${BLD}/server/shadow/libfreerdp-shadow3.dylib"
-  "${BLD}/server/common/libfreerdp-server3.dylib"
-  "${BLD}/winpr/tools/libwinpr-tools3.dylib"
-  "${BLD}/libfreerdp/libfreerdp3.dylib"
-  "${BLD}/winpr/libwinpr/libwinpr3.dylib")
-foreach(dep IN ITEMS ${IMPL} ${LIBS})
-  if(NOT EXISTS "${dep}")
-    message(FATAL_ERROR "FreeRDP dependency missing: ${dep}")
-  endif()
-endforeach()
+set(src "${FREERDP_SOURCE_ROOT}")
+set(build "${FREERDP_BUILD_ROOT}")
+set(shadow_impl "${build}/server/shadow/Mac/libfreerdp-shadow-subsystem-impl.a")
+set(cliprdr_dir "${build}/channels/cliprdr/server/CMakeFiles/cliprdr-server.dir")
+set(cliprdr_objects
+  "${cliprdr_dir}/cliprdr_main.c.o"
+  "${cliprdr_dir}/__/cliprdr_common.c.o")
 
-set(CLIPRDR_OBJECTS
-  "${BLD}/channels/cliprdr/server/CMakeFiles/cliprdr-server.dir/cliprdr_main.c.o"
-  "${BLD}/channels/cliprdr/server/CMakeFiles/cliprdr-server.dir/__/cliprdr_common.c.o")
-add_executable(macremote src/macremote.c src/graphics/rdp_graphics.c src/input/karabiner_compat.m
-  src/input/mac_clipboard.m)
+add_library(freerdp-codecs INTERFACE)
+target_include_directories(freerdp-codecs INTERFACE
+  "${src}/include" "${build}/include"
+  "${src}/winpr/include" "${build}/winpr/include")
+target_link_libraries(freerdp-codecs INTERFACE
+  "${build}/libfreerdp/libfreerdp3.dylib"
+  "${build}/winpr/libwinpr/libwinpr3.dylib")
 
-target_include_directories(macremote PRIVATE
-  "${SRC}/include" "${BLD}/include" "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(macremote PRIVATE -Wall -Wextra -Werror)
-target_compile_options(macremote PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
-target_link_libraries(macremote PRIVATE ${IMPL} ${CLIPRDR_OBJECTS} ${LIBS}
-  "-framework ScreenCaptureKit" "-framework CoreMedia"
-  "-framework CoreVideo" "-framework Foundation"
-  "-framework ApplicationServices" "-framework IOKit"
-  "-framework AppKit" "-framework Carbon" "-lpam")
-foreach(dir IN ITEMS
-  "${BLD}/server/shadow" "${BLD}/server/common"
-  "${BLD}/winpr/tools" "${BLD}/winpr/libwinpr" "${BLD}/libfreerdp")
-  set_property(TARGET macremote APPEND PROPERTY BUILD_RPATH "${dir}")
-endforeach()
+add_library(freerdp-shadow INTERFACE)
+target_link_libraries(freerdp-shadow INTERFACE
+  "${build}/server/shadow/libfreerdp-shadow3.dylib"
+  "${build}/server/common/libfreerdp-server3.dylib"
+  "${build}/winpr/tools/libwinpr-tools3.dylib"
+  freerdp-codecs)
+
+add_compile_options(-Wall -Wextra -Werror "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
+
+add_library(karabiner-compat STATIC src/input/karabiner_compat.m)
+target_link_libraries(karabiner-compat PUBLIC
+  "-framework AppKit" "-framework ApplicationServices"
+  "-framework Carbon" "-framework IOKit")
+
+add_library(mac-shadow INTERFACE)
+target_link_libraries(mac-shadow INTERFACE
+  "${shadow_impl}" freerdp-shadow karabiner-compat
+  "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo" "-lpam")
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
+add_library(remote-audio STATIC src/audio/remote_audio.c)
+target_include_directories(remote-audio PRIVATE "${src}/server/shadow/Mac")
+target_link_libraries(remote-audio PUBLIC mac-shadow PkgConfig::OPUS)
+
+add_executable(macremote
+  src/macremote.c src/graphics/rdp_graphics.c src/input/mac_clipboard.m
+  src/input/clipboard_formats.m src/display/device_display.m
+  src/device/client_preferences.m)
+target_link_libraries(macremote PRIVATE remote-audio ${cliprdr_objects})
 
 enable_testing()
-add_executable(test-karabiner-modifiers tests/test_karabiner_modifier_flags.c)
-target_compile_options(test-karabiner-modifiers PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(test-karabiner-modifiers PRIVATE
-  "-framework CoreGraphics" "-framework CoreFoundation")
-add_test(NAME karabiner-modifier-flags COMMAND test-karabiner-modifiers)
-# Exercise the actual pinned FreeRDP macOS Shadow keyboard callback.
-# The test defines CGEventPost locally, so no keyboard event reaches the desktop.
-add_executable(test-freerdp-karabiner-callback tests/test_freerdp_karabiner_callback.c src/input/karabiner_compat.m)
-target_include_directories(test-freerdp-karabiner-callback PRIVATE
-  "${SRC}/include" "${BLD}/include" "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(test-freerdp-karabiner-callback PRIVATE -Wall -Wextra -Werror)
-target_compile_options(test-freerdp-karabiner-callback PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
-target_link_libraries(test-freerdp-karabiner-callback PRIVATE ${IMPL} ${LIBS}
-  "-framework ScreenCaptureKit" "-framework CoreMedia"
-  "-framework CoreVideo" "-framework Foundation"
-  "-framework ApplicationServices" "-framework IOKit"
-  "-framework AppKit" "-framework Carbon" "-lpam")
-foreach(dir IN ITEMS
-  "${BLD}/server/shadow" "${BLD}/server/common"
-  "${BLD}/winpr/tools" "${BLD}/winpr/libwinpr" "${BLD}/libfreerdp")
-  set_property(TARGET test-freerdp-karabiner-callback APPEND PROPERTY BUILD_RPATH "${dir}")
-endforeach()
 
-add_test(NAME freerdp-karabiner-callback COMMAND test-freerdp-karabiner-callback)
-add_executable(test-karabiner-compat
-  tests/test_karabiner_compat.m src/input/karabiner_compat.m)
-target_compile_options(test-karabiner-compat PRIVATE
-  -Wall -Wextra -Werror -fobjc-arc)
-target_link_libraries(test-karabiner-compat PRIVATE
-  "-framework ApplicationServices" "-framework AppKit"
-  "-framework Foundation" "-framework Carbon" "-framework IOKit")
-add_test(NAME karabiner-compat COMMAND test-karabiner-compat)
-add_executable(test-clipboard-crlf tests/test_clipboard_crlf.m)
-target_include_directories(test-clipboard-crlf PRIVATE
-  "${SRC}/include" "${BLD}/include"
-  "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(test-clipboard-crlf PRIVATE -Wall -Wextra -Werror -fobjc-arc)
-target_link_libraries(test-clipboard-crlf PRIVATE
-  ${CLIPRDR_OBJECTS} ${LIBS} "-framework AppKit" "-framework Foundation")
-foreach(dir IN ITEMS "${BLD}/server/shadow" "${BLD}/server/common"
-   "${BLD}/winpr/tools" "${BLD}/winpr/libwinpr"
-   "${BLD}/libfreerdp")
-  set_property(TARGET test-clipboard-crlf APPEND PROPERTY BUILD_RPATH "${dir}")
-endforeach()
-add_test(NAME clipboard-windows-crlf COMMAND test-clipboard-crlf)
+function(macremote_test name source)
+  add_executable(test-${name} "${source}" ${ARGN})
+  add_test(NAME ${name} COMMAND test-${name})
+endfunction()
+
+macremote_test(pointer-geometry tests/test_pointer_geometry.c)
+
+macremote_test(surface-geometry tests/test_surface_geometry.c)
+target_include_directories(test-surface-geometry PRIVATE "${src}/server/shadow/Mac")
+
+macremote_test(capture-logical tests/test_capture_logical.c)
+target_include_directories(test-capture-logical PRIVATE "${src}/server/shadow/Mac")
+target_link_libraries(test-capture-logical PRIVATE "-framework CoreGraphics")
+
+macremote_test(device-display-memory tests/test_device_display.m)
+target_link_libraries(test-device-display-memory PRIVATE
+  "-framework Foundation" "-framework ApplicationServices")
+
+macremote_test(client-preferences-audio tests/test_client_preferences.m)
+target_include_directories(test-client-preferences-audio PRIVATE "${src}/server/shadow/Mac")
+target_link_libraries(test-client-preferences-audio PRIVATE remote-audio "-framework Foundation")
+
+macremote_test(karabiner-modifier-flags tests/test_karabiner_modifier_flags.c)
+target_link_libraries(test-karabiner-modifier-flags PRIVATE
+  "-framework CoreGraphics" "-framework CoreFoundation")
+
+# The callback test interposes CGEventPost to keep events off the desktop.
+macremote_test(freerdp-karabiner-callback tests/test_freerdp_karabiner_callback.c)
+target_link_libraries(test-freerdp-karabiner-callback PRIVATE mac-shadow)
+
+macremote_test(karabiner-compat tests/test_karabiner_compat.m)
+target_link_libraries(test-karabiner-compat PRIVATE karabiner-compat)
+
+macremote_test(clipboard-interoperability tests/test_clipboard.m src/input/clipboard_formats.m)
+target_link_libraries(test-clipboard-interoperability PRIVATE
+  ${cliprdr_objects} freerdp-shadow "-framework AppKit" "-framework Foundation")
+
+macremote_test(graphics-capability-modes tests/test_graphics_modes.c src/graphics/rdp_graphics.c)
+target_link_libraries(test-graphics-capability-modes PRIVATE freerdp-codecs)
+
+macremote_test(avc444-real-encoder tests/test_avc444_encoder.c)
+target_link_libraries(test-avc444-real-encoder PRIVATE freerdp-codecs)
+
+macremote_test(avc444-real-roundtrip tests/test_avc444_roundtrip.c)
+target_link_libraries(test-avc444-real-roundtrip PRIVATE freerdp-codecs)
+
 add_test(NAME version COMMAND macremote version)
 add_test(NAME doctor COMMAND macremote doctor)
 add_test(NAME reject-bad-port COMMAND macremote serve --port 0)
@@ -105,46 +118,6 @@ set_tests_properties(reject-bad-port PROPERTIES WILL_FAIL TRUE)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-  add_test(NAME cli-options
-    COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_SOURCE_DIR}/tests/test_cli.py"
-      "$<TARGET_FILE:macremote>")
+  add_test(NAME cli-options COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli.py" "$<TARGET_FILE:macremote>")
 endif()
-
-
-# Actual FreeRDP server capability settings and 444/444v2 encoding smoke test.
-add_executable(test-graphics-modes
-  tests/test_graphics_modes.c src/graphics/rdp_graphics.c)
-target_include_directories(test-graphics-modes PRIVATE
-  "${SRC}/include" "${BLD}/include"
-  "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(test-graphics-modes PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(test-graphics-modes PRIVATE "${BLD}/libfreerdp/libfreerdp3.dylib" "${BLD}/winpr/libwinpr/libwinpr3.dylib")
-set_property(TARGET test-graphics-modes APPEND PROPERTY BUILD_RPATH
-  "${BLD}/libfreerdp" "${BLD}/winpr/libwinpr")
-add_test(NAME graphics-capability-modes COMMAND test-graphics-modes)
-
-add_executable(test-avc444-encoder tests/test_avc444_encoder.c)
-target_include_directories(test-avc444-encoder PRIVATE
-  "${SRC}/include" "${BLD}/include"
-  "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(test-avc444-encoder PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(test-avc444-encoder PRIVATE "${BLD}/libfreerdp/libfreerdp3.dylib" "${BLD}/winpr/libwinpr/libwinpr3.dylib")
-set_property(TARGET test-avc444-encoder APPEND PROPERTY BUILD_RPATH
-  "${BLD}/libfreerdp" "${BLD}/winpr/libwinpr")
-add_test(NAME avc444-real-encoder COMMAND test-avc444-encoder)
-
-
-# Verify actual AVC444 codecs round-trip images across two observed desktop
-# sizes, not merely that they emit a compressed stream.
-add_executable(test-avc444-roundtrip tests/test_avc444_roundtrip.c)
-target_include_directories(test-avc444-roundtrip PRIVATE
-  "${SRC}/include" "${BLD}/include"
-  "${SRC}/winpr/include" "${BLD}/winpr/include")
-target_compile_options(test-avc444-roundtrip PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(test-avc444-roundtrip PRIVATE
-  "${BLD}/libfreerdp/libfreerdp3.dylib"
-  "${BLD}/winpr/libwinpr/libwinpr3.dylib")
-set_property(TARGET test-avc444-roundtrip APPEND PROPERTY BUILD_RPATH
-  "${BLD}/libfreerdp" "${BLD}/winpr/libwinpr")
-add_test(NAME avc444-real-roundtrip COMMAND test-avc444-roundtrip)

@@ -53,7 +53,7 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 These preview packages use **ad-hoc signing** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
 
 > [!NOTE]
-> This preview was built from a newer local working tree. GitHub's automatically generated source archives for the release tag refer to older source code; the attached DMGs contain the v0.2.0 preview. See [release notes](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1).
+> **v0.2.0 source code is now public on [main](https://github.com/ahang39/MacRemote/tree/main).** The existing `v0.2.0-adhoc.1` release tag was created before the source was published, so GitHub's auto-generated source archives for that tag still point to an older snapshot. Use `main` for the code corresponding to the attached preview DMGs.
 
 ## Features
 
@@ -101,10 +101,14 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-The standalone app is generated under `.build/output/`. The build pins FreeRDP and builds private dependencies. See the [build guide](docs/m2/README.md). The public repository may lag behind preview release binaries, as described above.
+The standalone app is generated under `.build/output/`. The build pins FreeRDP and builds private dependencies. See the [build guide](docs/m2/README.md). Build from `main` for the complete v0.2.0 preview source.
 
 ## Project
 
 This is an **alpha preview**, developed with real Windows RDP compatibility and reproducible testing as priorities. Contributions and clear bug reports are welcome: [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Issues](https://github.com/ahang39/MacRemote/issues).
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) for MacRemote; bundled dependencies retain their [respective licenses](THIRD_PARTY_NOTICES.md).
+
+## Friends
+
+[LINUX DO — 新的理想型社区](https://linux.do/)

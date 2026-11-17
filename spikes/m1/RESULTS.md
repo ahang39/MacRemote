@@ -64,12 +64,9 @@ A hardware-like input backend alone also will not solve Insert's macOS Help sema
 
 ## 4. Executed model probes
 
-```sh
-swift spikes/m1/InputModel.swift
-swift spikes/m1/ClipboardModel.swift
-```
-
-Both completed with exit code **0** on the target Mac:
+The retired Swift model probes both completed with exit code **0** on the target Mac.
+Current regression tests exercise the [native input path](../../tests/test_freerdp_karabiner_callback.c)
+and [CLIPRDR callbacks](../../tests/test_clipboard.m).
 
 - **Input: 15/15 assertions PASS** — E0 Insert vs keypad 0, E0 Print Screen vs keypad *, E1 Pause marker distinct, repeat handling, key-up state, reconnect/disconnect release. **No HID events injected.**
 - **Clipboard: 38/38 assertions PASS** — 11 CRLF/LF/CJK/Unicode fixtures x3 round-trip/idempotency tests, malformed payload rejection, clipboard echo-origin model. **No system pasteboard touched.**

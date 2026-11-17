@@ -8,7 +8,7 @@ See [PRD](PRD.md) for product requirements and [ADR-0001](adr/0001-protocol-stac
 - Mac host: **Apple Silicon (arm64) or Intel (x86_64), macOS 14+**.
 - Standard RDP clients, especially Windows `mstsc`.
 - First release attaches to the **existing, already-logged-in macOS graphical session and physical display**.
-- All primary features work without private macOS APIs or a proprietary relay.
+- Core capture, RDP, input and clipboard work without private macOS APIs or a proprietary relay. Optional manual display re-detection is isolated in a helper that uses an OS-private symbol.
 - Networking is plain IP: HY2, WireGuard, Tailscale and SSH forwarding are **external deployment choices**.
 - Prefer existing OSS protocol libraries, not a new RDP protocol implementation.
 
@@ -38,33 +38,73 @@ Windows mstsc / other standard RDP client
 
 The diagram shows **responsibility boundaries**, not a promise of process separation.
 
-## 3. Planned modules
+## 3. Implemented process and ownership boundaries
 
-| Boundary | Responsibility | Important constraint |
-| --- | --- | --- |
-| RDP protocol adapter | FreeRDP 3.33.1 Shadow: TLS/CredSSP, capabilities, channels, transport and frames | Pinned, external upstream dependency |
-| Session manager | Authorized login-to-desktop association, connection state, teardown | One logged-in user/session first |
-| macOS adapter | Capture, TCC permissions, physical-display selection | Supported system API paths |
-| Native input engine | Decode RDP scancodes/Unicode, preserve extended keys, track state; inject via validated HID or Quartz backends | Test Insert/Help and Print Screen against real macOS semantics; see ADR-0003 |
-| ClipboardBridge | RDP CLIPRDR formats, macOS pasteboard, newline conversion and update origin/generation | No duplicate paste, extra newline or sync feedback; see ADR-0004 |
-| Graphics pipeline | Dirty regions, encoder, bounded queues, frame acknowledgement | No unlimited backlog; prefer latest useful frame |
-| Network adaptation | Rate limiting, quality fallback and client feedback | Input must remain responsive |
-| Observability | Transfer rate, negotiated codec, frame/encode/capture rates, errors | No invented client-side metrics |
-| User interface | Menu-bar app, small CLI, status/permissions/diagnostics | Thin clients over shared core logic |
+Two processes are deliberately retained: the SwiftUI menu-bar application
+manages a child RDP server; FreeRDP Shadow, capture, authentication, clipboard
+and input remain in the C/Objective-C server. No daemon or IPC framework is
+needed.
 
-A separate privileged daemon, XPC/UDS IPC, and multiple cooperating agents are **not chosen yet**. Start with the simplest session-local process architecture allowed by macOS permissions, then split only for a demonstrated reason.
+| Module | Ownership |
+| --- | --- |
+| SwiftUI app / menu delegate | Native status item, popover and user interaction |
+| ServerController | Child-process lifecycle, terminal failures and bounded restart policy |
+| DisplayOutputSettings | User choices, effective scale state and visible status |
+| DisplayModeService / DisplayModeOperations | CoreGraphics mode discovery and explicitly authorized helper execution |
+| DisplayConfigurationStore | Output selection and capture-geometry file persistence |
+| ClientDevicePreferences | Per-device output, HiDPI mode, volume, and mute. Locked field updates to the existing `display-by-client.json` |
+| src/macremote.c | CLI, server bootstrap and FreeRDP input hooks |
+| src/device/client_preferences.m | Primary client ownership, remembered profile loading, and effective audio volume |
+| src/display/device_display.m | Restores remembered display modes and publishes capture geometry |
+| src/audio/remote_audio.c | Remote gain, Opus encoding and mute enforcement at the `rdpsnd` send boundary |
+| src/input/mac_clipboard.m | CLIPRDR sessions, advertised snapshots and one in-flight format request per client |
+| src/input/clipboard_formats.m | UTF-16/CRLF text and PNG/DIB codec boundary |
+| src/graphics/rdp_graphics.c | Graphics policy and encoder integration |
+| patches/freerdp-3.33.1-shadow-output-geometry.patch | Version-controlled FreeRDP 3.33.1 display geometry integration |
+
+The fixed RDP surface is selected at server startup. CoreGraphics logical
+desktop changes rebuild capture without live RDP surface resizing. The common
+surface viewport maps video, pointer input and cursor feedback, including
+letterbox/pillarbox offsets.
+
+### Remote volume
+
+When a client authenticates, the server loads its profile using the existing
+normalized hostname hash and IP fallback. Additional clients share the
+first client's audio setting. When that primary disconnects, the oldest
+remaining client becomes primary and its audio setting takes effect while
+the current display mode stays in use. On the final disconnect the server
+clears effective audio and retains the last key for the display preferences.
+
+The client marker includes the server PID while connected. The popover
+uses the marker for its own server process to select the current profile
+and disables the audio controls while disconnected. Slider and mute edits
+merge into that profile and atomically replace the JSON. Missing audio
+fields default to 100% and unmuted. A muted slider edit updates the level
+that will be restored on unmute.
+
+The server watches the configuration directory for atomic replacements and
+applies effective audio settings in the audio module. ScreenCaptureKit supplies
+48 kHz stereo PCM. The module ramps gain over 5 ms and encodes one 640-byte
+Opus packet per 20 ms of active audio at a fixed 256 kbps. Shadow queues
+the encoded packets and `rdpsnd` sends them as Wave2 PDUs. Clients must
+negotiate Opus and support Wave2 to receive audio.
+
+Mute and 0% stop submitting audio payloads to `rdpsnd` as soon as the new
+setting takes effect. The send boundary discards queued packets from earlier
+mute states. On resume the module resets the encoder and starts at a new PCM
+frame with a brief fade-in. Data already handed off to FreeRDP or the network
+can drain, and RDP channel control messages can still be exchanged.
 
 ## 4. Security boundary
 
-RDP authentication is **not automatically sufficient** to authorize use of a particular macOS desktop. The M1 Spike must identify an auditable, supported strategy for:
-
-1. authenticating the connecting RDP user;
-2. checking authorization against the currently active macOS graphical session;
-3. granting screen capture and event injection only where macOS permissions allow;
-4. safe termination, reconnect and release of pressed keys;
-5. keeping certificates, secrets and screen contents out of logs.
-
-M2 uses FreeRDP macOS Shadow PAM callback for the process owner's Mac username/password over TLS, with NLA off. Default bind is all interfaces, port 3389, with configurable IP/port; input enabled and no MacRemote client-count cap. See [ADR-0007](adr/0007-native-macos-login.md).
+FreeRDP's macOS Shadow PAM callback validates the process owner's Mac
+account over TLS, with NLA disabled (ADR-0007). The server attaches to the
+existing logged-in desktop, uses macOS TCC grants for capture, and injects
+input through Quartz. Default listener binding is all interfaces on TCP 3389;
+the CLI and GUI allow a custom port, and the CLI supports an explicit bind IP.
+The listener must be protected by a private network/VPN, with certificate
+verification before password entry.
 
 ## 5. Performance model and diagnostics
 
@@ -91,10 +131,17 @@ Windows `CF_UNICODETEXT` uses CRLF; macOS plain text typically uses LF. Normaliz
 - Physical display mode is first. Headless or virtual display behavior requires separate validation and will not rely on private APIs for core availability.
 - VideoToolbox availability does not guarantee that the chosen RDP stack can negotiate AVC444; validate client and server capabilities end to end.
 
-## 7. Implementation gates
+## 7. Current verification boundary
 
-M0/M1 complete: FreeRDP selected. Current Alpha exposes Mac TLS+PAM login, configurable listener and input; successful Windows mstsc login, native Karabiner, clipboard and portable signing remain.
+The native tests exercise geometry, remote audio, clipboard, Karabiner
+input, graphics and the CLI. The audio test injects synthetic stereo samples
+through the production capture callback and decodes the outgoing Opus packets.
+Swift tests cover display and audio preferences and drive the menu controller against
+an isolated helper process to verify error reporting and retry cancellation.
+The Windows mstsc Classic login/display path has been verified, while rapid
+typing, Windows image clipboard exchange, audio and all HiDPI interactions
+still require real-client regression.
 
-M1 measured stack differences, and FreeRDP selected. Karabiner HID/entitlements and clipboard/IME are still unresolved and remain required before daily-use beta.
-
-FreeRDP is the selected protocol foundation. The current private Alpha is an actual user-session C service and SwiftUI controller; signing, portable dependency packaging, security hardening and final config remain.
+The pinned FreeRDP patch series is applied with explicit compatibility checks
+and requires the exact upstream commit. Native and Swift build checks are automated; source
+checks do not substitute for a real Windows RDP session.

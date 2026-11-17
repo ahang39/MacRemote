@@ -15,7 +15,7 @@ Status: **v0.1.0 initial Ad-hoc preview for Apple Silicon and Intel**. Developer
 
 ## Must verify before calling it daily-use Beta
 
-- [ ] **Revalidate Mac account login in the latest Windows mstsc build** without exposing credentials in chat; verify TLS certificate trust and reconnect. Earlier Classic-mode mstsc login succeeded.
+- [x] **Mac account login in Windows mstsc and reconnect** tested 2026-11-16 without exposing credentials; actual TLS certificate-trust UX still needs separate verification ([full regression](qa/2026-11-16-full-regression.md)).
 - [ ] Karabiner-native remote input, Insert/Help, extended keys, modifiers, mouse and key-up behavior.
 - [ ] CLIPRDR bidirectional clipboard, Windows CRLF/Mac LF and WeChat IME duplicate-paste corrections.
 - [ ] Reconnect/soak testing, sleep/wake and display changes.

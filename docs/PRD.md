@@ -2,7 +2,7 @@
 
 Status: **Draft 0.1 — 2026-11-13**
 Owner: MacRemote project
-Implementation status: **private Alpha: macOS TLS+PAM account login path, unrestricted keyboard/mouse and network binding built; real successful Windows mstsc login pending**
+Implementation status: **private Alpha: macOS TLS+PAM account login path, unrestricted keyboard/mouse and network binding built; Windows mstsc Classic login and display verified; rapid typing, image clipboard and audio regressions remain open**
 
 ## 1. Problem and positioning
 
@@ -35,13 +35,14 @@ Priority meaning: **P0** = prerequisite for first usable MVP; **P1** = needed fo
 | R-10 | P0 (plain text), P1 (rich formats/audio) | Correct bidirectional clipboard sync and platform newline conversion | No duplicate blank lines, paste actions or sync feedback with mstsc and WeChat Input Method; see ADR-0004 |
 | R-10a | P1 | Rich clipboard formats and audio | Format precedence and channel safety tests |
 | R-11 | P1 | Disconnect/reconnect, wake and display-change robustness | Automated recovery matrix, no unbounded queues or memory leak |
-| R-12 | P1 | Display changes follow client requests where safe | Correct layout and supported physical-mode transitions; restore after exit |
+| R-12 | P1 | MacRemote remembers manually selected logical and HiDPI display modes per RDP client without automatic size matching; Hammerspoon restores UU/local mode after disconnect (ADR-0009) | Verified aspect ratio and available CoreGraphics mode, no competing automation, correct cursor coordinates |
+| R-12a | P1 | Editable 16:9 RDP output combo plus eight nonlinear HiDPI scale choices plus thresholded reuse of existing modes with one explicit state-aware action, independent of output size (ADR-0010) | Source modes or custom output size, correct 2x capture, input coordinates, mode override installer and recovery |
 | R-13 | P2 | Optional virtual display and headless operation | Independent security/platform review; never relied on by MVP |
 | R-14 | P2 | Standard RDP UDP multitransport | Measurable improvement with supported clients; TCP fallback verified |
 
 ### UX and configuration
 
-- **Minimal surface** (proposed, not implemented): listener/binding, connection authorization, quality preset, display selection only where needed.
+- **Minimal surface** (proposed, not implemented): listener/binding, connection authorization and quality preset.
 - Default to all-interface listening on TCP 3389, with optional --bind IP and a persistent custom menu port. Standard input and upstream client handling, no extra RDP account.
 - Observability should be visible in the menu-bar UI and CLI, with **clearly labeled units and metric provenance**.
 - No account system, subscriptions, telemetry upload, external gateway, or required cloud service.

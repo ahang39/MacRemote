@@ -53,7 +53,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 当前 DMG 使用 **Ad-hoc 签名，尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
 > [!NOTE]
-> v0.2.0 安装包来自尚未全部推送的本地新代码。GitHub 根据 Release 标签自动生成的 Source code 压缩包仍是旧源码，**下载新版应使用上面的 DMG**。详情见 [Release Notes](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1)。
+> **v0.2.0 的完整源码现已公开在 [main 分支](https://github.com/ahang39/MacRemote/tree/main)。** 现有 `v0.2.0-adhoc.1` Release 标签创建于源码公开之前，因此 GitHub 按该标签自动生成的 Source code 压缩包仍对应旧快照。请从 `main` 获取与本次预览 DMG 对应的代码。
 
 ## 主要功能
 
@@ -101,10 +101,14 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。当前公开源码可能落后于预览版安装包，以上面发布说明为准。
+构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.2.0 预览版源码。
 
 ## 项目与贡献
 
 MacRemote 仍处于 **Alpha 预览阶段**，以真实 Windows `mstsc` 兼容性和可复现实测为开发依据。欢迎提交问题及改进：[参与贡献](CONTRIBUTING.md) · [安全政策](SECURITY.md) · [Issues](https://github.com/ahang39/MacRemote/issues)。
 
 **许可证：**MacRemote 使用 [PolyForm Noncommercial 1.0.0](LICENSE)，第三方组件保留各自[许可证与声明](THIRD_PARTY_NOTICES.md)。
+
+## 友情链接
+
+[LINUX DO — 新的理想型社区](https://linux.do/)

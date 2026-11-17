@@ -11,6 +11,7 @@
 
 static NSData *mockWire;
 static UINT32 mockRequested;
+static unsigned mockRequestCount;
 static UINT32 mockOffered[4];
 static UINT32 mockOfferedCount;
 static UINT mock_response(CliprdrServerContext *ctx,
@@ -42,6 +43,7 @@ static UINT mock_request(CliprdrServerContext *ctx,
 {
     (void)ctx;
     mockRequested=request->requestedFormatId;
+    mockRequestCount++;
     return CHANNEL_RC_OK;
 }
 
@@ -57,27 +59,25 @@ int main(void) {
         "a\r\n\r\nb\r\n\r\nc\r\n", "\r\n", "\r\n\r\n",
         "你好\r\n世界", "a\r\n🦊\r\nb"
     };
-    for (int i=0;examples[i];i++) {
-        char *got=mr_clipboard_crlf_utf8(examples[i]);
-        MUST(got!=NULL && strcmp(got,expected[i])==0);
-        char *again=mr_clipboard_crlf_utf8(got);
-        MUST(again!=NULL && strcmp(got,again)==0);
-        NSString *native=[NSString stringWithUTF8String:examples[i]];
-        NSString *canon=mr_windows_lines(native);
-        MUST([canon isEqualToString:[NSString stringWithUTF8String:expected[i]]]);
-        NSData *wire=mr_utf16le_with_nul(canon);
-        MUST(wire!=nil && wire.length>=2 && wire.length%2==0);
-        const uint8_t *bytes=wire.bytes;
-        MUST(bytes[wire.length-1]==0 && bytes[wire.length-2]==0);
-        NSString *parsed=mr_parse_utf16le(bytes,wire.length);
-        MUST([parsed isEqualToString:canon]);
-        /* Isolate the pasteboard test from the user's real clipboard. */
-        NSPasteboard *pb=[NSPasteboard pasteboardWithUniqueName];
-        [pb clearContents];
-        MUST([pb setString:canon forType:NSPasteboardTypeString]);
-        MUST([[pb stringForType:NSPasteboardTypeString] isEqualToString:canon]);
-        [pb releaseGlobally];
-        free(got);free(again);
+    for (int i=0; examples[i]; i++) {
+        NSString *native = [NSString stringWithUTF8String:examples[i]];
+        NSString *windows = mr_clipboard_windows_lines(native);
+        MUST([windows isEqualToString:[NSString stringWithUTF8String:expected[i]]]);
+        MUST([mr_clipboard_windows_lines(windows) isEqualToString:windows]);
+        NSString *mac = mr_clipboard_mac_lines(native);
+        MUST([mr_clipboard_mac_lines(windows) isEqualToString:mac]);
+        NSData *wire = mr_clipboard_encode_unicode(native);
+        MUST(wire && wire.length >= 2 && wire.length % 2 == 0);
+        const uint8_t *bytes = wire.bytes;
+        MUST(bytes[wire.length - 1] == 0 && bytes[wire.length - 2] == 0);
+        NSString *parsed = mr_clipboard_decode_unicode(bytes, wire.length);
+        MUST([parsed isEqualToString:mac]);
+
+        NSPasteboard *board = [NSPasteboard pasteboardWithUniqueName];
+        [board clearContents];
+        MUST([board setString:mac forType:NSPasteboardTypeString]);
+        MUST([[board stringForType:NSPasteboardTypeString] isEqualToString:mac]);
+        [board releaseGlobally];
     }
     /* A Windows DIB round-trips via the Mac's native PNG pasteboard,
      * preserving dimensions and pixels without external conversion tools. */
@@ -92,25 +92,25 @@ int main(void) {
     [image setColor:[NSColor whiteColor] atX:1 y:1];
     NSData *png=[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     MUST(png!=nil && png.length>0);
-    NSData *dib=mr_png_to_dib(png);
+    NSData *dib=mr_clipboard_dib_from_png(png);
     MUST(dib!=nil && dib.length>40);
-    NSData *rebuilt=mr_dib_to_png(dib.bytes,dib.length);
+    NSData *rebuilt=mr_clipboard_png_from_dib(dib.bytes,dib.length);
     MUST(rebuilt!=nil);
     NSBitmapImageRep *converted=[NSBitmapImageRep imageRepWithData:rebuilt];
     MUST(converted.pixelsWide==2 && converted.pixelsHigh==2);
     NSPasteboard *pictureBoard=[NSPasteboard pasteboardWithUniqueName];
     [pictureBoard clearContents];
     MUST([pictureBoard setData:png forType:NSPasteboardTypePNG]);
-    mr_clipboard_test_pasteboard=pictureBoard;
-    MUST([mr_mac_png() isEqualToData:png]);
-    mr_clipboard_test_pasteboard=nil;
+    mr_clipboard_pasteboard=pictureBoard;
+    MUST([mr_clipboard_png_from_pasteboard(mr_board()) isEqualToData:png]);
+    mr_clipboard_pasteboard=nil;
     [pictureBoard releaseGlobally];
 
     /* Protocol callback-level integration. None of this accesses the
      * user's general pasteboard or requires an actual RDP connection. */
     NSPasteboard *remoteBoard=[NSPasteboard pasteboardWithUniqueName];
     [remoteBoard clearContents];
-    mr_clipboard_test_pasteboard=remoteBoard;
+    mr_clipboard_pasteboard=remoteBoard;
     mr_clipboard_lock=[NSRecursiveLock new];
     mr_clipboard_sessions=[NSMutableDictionary dictionary];
     MRClipboardSession *session=[MRClipboardSession new];
@@ -122,8 +122,7 @@ int main(void) {
     channel.ServerFormatDataResponse=mock_response;
     session.channel=&channel;
     session.ready=YES;
-    session.client=(rdpShadowClient *)0x1234;
-    mr_clipboard_sessions[[NSValue valueWithPointer:session.client]]=session;
+    mr_clipboard_sessions[[NSValue valueWithPointer:(void *)0x1234]]=session;
 
     mr_clipboard_offer(session,@"你好\nWorld",png);
     MUST(mockOfferedCount==3);
@@ -132,8 +131,8 @@ int main(void) {
     CLIPRDR_FORMAT_DATA_REQUEST req={0};
     req.requestedFormatId=CF_UNICODETEXT;
     MUST(mr_client_data_request(&channel,&req)==CHANNEL_RC_OK);
-    MUST([mr_parse_utf16le(mockWire.bytes,mockWire.length)
-          isEqualToString:@"你好\r\nWorld"]);
+    MUST([mr_clipboard_decode_unicode(mockWire.bytes,mockWire.length)
+          isEqualToString:@"你好\nWorld"]);
     req.requestedFormatId=CF_DIB;
     MUST(mr_client_data_request(&channel,&req)==CHANNEL_RC_OK);
     MUST(mockWire.length>40);
@@ -148,14 +147,14 @@ int main(void) {
     remoteList.formats=&remoteFormat;
     MUST(mr_client_format_list(&channel,&remoteList)==CHANNEL_RC_OK);
     MUST(mockRequested==CF_UNICODETEXT);
-    NSData *remoteText=mr_utf16le_with_nul(@"Windows\nMac");
+    NSData *remoteText=mr_clipboard_encode_unicode(@"Windows\nMac");
     CLIPRDR_FORMAT_DATA_RESPONSE response={0};
     response.common.msgFlags=CB_RESPONSE_OK;
     response.common.dataLen=(UINT32)remoteText.length;
     response.requestedFormatData=remoteText.bytes;
     MUST(mr_client_data_response(&channel,&response)==CHANNEL_RC_OK);
     MUST([[remoteBoard stringForType:NSPasteboardTypeString]
-          isEqualToString:@"Windows\r\nMac"]);
+          isEqualToString:@"Windows\nMac"]);
     NSInteger change=remoteBoard.changeCount;
     MUST(mr_client_data_response(&channel,&response)==CHANNEL_RC_OK);
     MUST(remoteBoard.changeCount==change); /* no clipboard echo loop */
@@ -165,8 +164,8 @@ int main(void) {
     [remoteBoard setString:@"Mac\nnext" forType:NSPasteboardTypeString];
     mr_clipboard_poll();
     MUST([[remoteBoard stringForType:NSPasteboardTypeString]
-          isEqualToString:@"Mac\r\nnext"]);
-    MUST([session.snapshot isEqualToString:@"Mac\r\nnext"]);
+          isEqualToString:@"Mac\nnext"]);
+    MUST([session.snapshot isEqualToString:@"Mac\nnext"]);
 
     remoteFormat.formatId=CF_DIB;
     MUST(mr_client_format_list(&channel,&remoteList)==CHANNEL_RC_OK);
@@ -176,13 +175,76 @@ int main(void) {
     MUST(mr_client_data_response(&channel,&response)==CHANNEL_RC_OK);
     MUST([remoteBoard dataForType:NSPasteboardTypePNG]!=nil);
 
-    mr_clipboard_test_pasteboard=nil;
+    /* A Windows clipboard can advertise text AND image. Request both formats
+       and commit one native pasteboard update containing both. */
+    CLIPRDR_FORMAT mixed[] = {
+        {.formatId=CF_UNICODETEXT},
+        {.formatId=CF_DIB}
+    };
+    remoteList.numFormats=2;
+    remoteList.formats=mixed;
+    MUST(mr_client_format_list(&channel,&remoteList)==CHANNEL_RC_OK);
+    MUST(mockRequested==CF_UNICODETEXT);
+    NSInteger before=remoteBoard.changeCount;
+    NSData *mixedText=mr_clipboard_encode_unicode(@"new\nmixed");
+    response.common.dataLen=(UINT32)mixedText.length;
+    response.requestedFormatData=mixedText.bytes;
+    MUST(mr_client_data_response(&channel,&response)==CHANNEL_RC_OK);
+    MUST(mockRequested==CF_DIB);
+    MUST(remoteBoard.changeCount==before);
+    response.common.dataLen=(UINT32)dib.length;
+    response.requestedFormatData=dib.bytes;
+    MUST(mr_client_data_response(&channel,&response)==CHANNEL_RC_OK);
+    MUST([[remoteBoard stringForType:NSPasteboardTypeString]
+          isEqualToString:@"new\nmixed"]);
+    MUST([remoteBoard dataForType:NSPasteboardTypePNG]!=nil);
+
+    // A new format list cannot change the meaning of an in-flight response.
+    remoteList.numFormats = 1;
+    remoteList.formats = &remoteFormat;
+    remoteFormat.formatId = CF_UNICODETEXT;
+    MUST(mr_client_format_list(&channel, &remoteList) == CHANNEL_RC_OK);
+    unsigned requests = mockRequestCount;
+    remoteFormat.formatId = CF_DIB;
+    MUST(mr_client_format_list(&channel, &remoteList) == CHANNEL_RC_OK);
+    MUST(mockRequestCount == requests);
+    before = remoteBoard.changeCount;
+    response.common.dataLen = (UINT32)remoteText.length;
+    response.requestedFormatData = remoteText.bytes;
+    MUST(mr_client_data_response(&channel, &response) == CHANNEL_RC_OK);
+    MUST(mockRequestCount == requests + 1 && mockRequested == CF_DIB);
+    MUST(remoteBoard.changeCount == before);
+    response.common.dataLen = (UINT32)dib.length;
+    response.requestedFormatData = dib.bytes;
+    MUST(mr_client_data_response(&channel, &response) == CHANNEL_RC_OK);
+
+    // A later local copy wins over a delayed response.
+    remoteFormat.formatId = CF_UNICODETEXT;
+    MUST(mr_client_format_list(&channel, &remoteList) == CHANNEL_RC_OK);
+    [remoteBoard clearContents];
+    MUST([remoteBoard setData:png forType:NSPasteboardTypePNG]);
+    before = remoteBoard.changeCount;
+    response.common.dataLen = (UINT32)remoteText.length;
+    response.requestedFormatData = remoteText.bytes;
+    MUST(mr_client_data_response(&channel, &response) == CHANNEL_RC_OK);
+    MUST(remoteBoard.changeCount == before);
+    MUST([[remoteBoard dataForType:NSPasteboardTypePNG] isEqualToData:png]);
+
+    /* The advertised snapshot must never be substituted with a later copy. */
+    mr_clipboard_offer(session,@"original\ntext",png);
+    [remoteBoard clearContents];
+    [remoteBoard setString:@"later" forType:NSPasteboardTypeString];
+    req.requestedFormatId=CF_UNICODETEXT;
+    MUST(mr_client_data_request(&channel,&req)==CHANNEL_RC_OK);
+    MUST([mr_clipboard_decode_unicode(mockWire.bytes,mockWire.length)
+          isEqualToString:@"original\ntext"]);
+
+    mr_clipboard_pasteboard=nil;
     [remoteBoard releaseGlobally];
     [mr_clipboard_sessions removeAllObjects];
 
-    MUST(mr_clipboard_crlf_utf8(NULL)==NULL);
-    MUST(mr_parse_utf16le((const uint8_t*)"\x00",1)==nil);
-    puts("PASS: Mac and Windows clipboard text both use idempotent CRLF, UTF-16LE wire, UTF-8 and Unicode");
+    MUST(mr_clipboard_decode_unicode((const uint8_t*)"\x00",1)==nil);
+    puts("PASS: native LF, Windows CRLF, image round-trip, mixed formats and immutable snapshots");
  }
  return 0;
 }

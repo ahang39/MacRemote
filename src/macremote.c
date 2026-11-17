@@ -6,11 +6,15 @@
 #include <freerdp/settings.h>
 #include <winpr/synch.h>
 #include <CoreGraphics/CoreGraphics.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <freerdp/input.h>
 #include <pthread.h>
 #include "input/karabiner_compat.h"
 #include "input/mac_clipboard.h"
 #include "graphics/rdp_graphics.h"
+#include "device/client_preferences.h"
+#include "audio/remote_audio.h"
+#include "input/pointer_geometry.h"
 
 #include <arpa/inet.h>
 #include <mach-o/dyld.h>
@@ -28,6 +32,29 @@
 
 static volatile sig_atomic_t stop_requested = 0;
 static void stop_signal(int signum) { (void)signum; stop_requested = 1; }
+
+
+/* Quartz display-change notifications require an active event run loop.
+ * The shadow server used to Sleep() on its main thread, leaving its
+ * CoreGraphics display bounds cached after AppKit/other processes switched
+ * logical HiDPI resolution. The capture and pointer geometry then referred
+ * to different desktop sizes. Keep the main CFRunLoop processing events and
+ * let FreeRDP's per-second display watcher rebuild its capture as needed. */
+static void macremote_display_reconfiguration(CGDirectDisplayID display,
+                                                CGDisplayChangeSummaryFlags flags,
+                                                void* context)
+{
+    (void)context;
+    if (flags & kCGDisplayBeginConfigurationFlag)
+        return;
+    if (!(flags & (kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag |
+                   kCGDisplayMovedFlag | kCGDisplayAddFlag | kCGDisplayRemoveFlag)))
+        return;
+    const CGRect bounds = CGDisplayBounds(display);
+    fprintf(stderr, "[MacRemote display reconfigure] display=%u flags=0x%x logical=%.0fx%.0f\n",
+            (unsigned)display, (unsigned)flags,
+            bounds.size.width, bounds.size.height);
+}
 
 static void usage(FILE *out)
 {
@@ -49,12 +76,13 @@ static void usage(FILE *out)
  * The callback runs in MacRemote's own RDP process; no Karabiner process,
  * driver, helper application, or additional service is required. */
 extern void mac_shadow_set_input_filter(CGEventRef (*filter)(CGEventRef));
-extern int ShadowSubsystemEntry(RDP_SHADOW_ENTRY_POINTS *entryPoints);
+extern void shadow_client_set_avc420_bitrate_provider(UINT32 (*provider)(const rdpShadowClient*));
 extern void shadow_channels_set_clipboard_hooks(UINT (*on_connect)(rdpShadowClient*),
                                                  void (*on_disconnect)(rdpShadowClient*));
 
 
 static struct {
+    pfnShadowClientConnect connect;
     pfnShadowKeyboardEvent keyboard;
     pfnShadowUnicodeKeyboardEvent unicode;
     pfnShadowMouseEvent mouse;
@@ -82,9 +110,38 @@ static BOOL macremote_unicode(rdpShadowSubsystem *s, rdpShadowClient *c,
     return result;
 }
 
+extern BOOL mac_shadow_stream_geometry_ready(const rdpShadowSubsystem *subsystem);
+
+static BOOL macremote_pointer_ready(rdpShadowSubsystem *s, rdpShadowClient *c)
+{
+    if (!s || !c || !c->context.settings || s->selectedMonitor >= s->numMonitors)
+        return FALSE;
+    const MONITOR_DEF *monitor = &s->monitors[s->selectedMonitor];
+    const UINT32 width = (UINT32)(monitor->right - monitor->left + 1);
+    const UINT32 height = (UINT32)(monitor->bottom - monitor->top + 1);
+    const CGRect bounds = CGDisplayBounds(CGMainDisplayID());
+    const UINT32 remoteWidth =
+        freerdp_settings_get_uint32(c->context.settings, FreeRDP_DesktopWidth);
+    const UINT32 remoteHeight =
+        freerdp_settings_get_uint32(c->context.settings, FreeRDP_DesktopHeight);
+    const BOOL geometry = mac_shadow_stream_geometry_ready(s);
+    const BOOL dimensions = mr_pointer_geometry_ready(
+        remoteWidth, remoteHeight, width, height,
+        (UINT32)bounds.size.width, (UINT32)bounds.size.height,
+        c->resizeRequested);
+    const BOOL ready = geometry && dimensions;
+    return ready;
+}
+
 static BOOL macremote_mouse(rdpShadowSubsystem *s, rdpShadowClient *c,
                             UINT16 flags, UINT16 x, UINT16 y)
 {
+    const bool ready = macremote_pointer_ready(s, c);
+    const bool button = (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) != 0;
+    if (!mr_pointer_event_allowed(ready, button, (flags & PTR_FLAGS_DOWN) != 0))
+        return TRUE;
+    if (!ready && (!s || s->selectedMonitor >= s->numMonitors))
+        return TRUE;
     mr_compat_set_client(c);
     BOOL result = macremote_input_original.mouse(s, c, flags, x, y);
     mr_compat_set_client(NULL);
@@ -94,14 +151,30 @@ static BOOL macremote_mouse(rdpShadowSubsystem *s, rdpShadowClient *c,
 static BOOL macremote_extended_mouse(rdpShadowSubsystem *s, rdpShadowClient *c,
                                      UINT16 flags, UINT16 x, UINT16 y)
 {
+    const bool ready = macremote_pointer_ready(s, c);
+    const bool button = (flags & (PTR_XFLAGS_BUTTON1 | PTR_XFLAGS_BUTTON2)) != 0;
+    if (!mr_pointer_event_allowed(ready, button, (flags & PTR_XFLAGS_DOWN) != 0))
+        return TRUE;
+    if (!ready && (!s || s->selectedMonitor >= s->numMonitors))
+        return TRUE;
     mr_compat_set_client(c);
     BOOL result = macremote_input_original.extended_mouse(s, c, flags, x, y);
     mr_compat_set_client(NULL);
     return result;
 }
 
+static BOOL macremote_connect(rdpShadowSubsystem *s, rdpShadowClient *c)
+{
+    if (macremote_input_original.connect && !macremote_input_original.connect(s, c))
+        return FALSE;
+    mr_remote_audio_attach(c);
+    mr_client_preferences_connect(c);
+    return TRUE;
+}
+
 static void macremote_disconnect(rdpShadowSubsystem *s, rdpShadowClient *c)
 {
+    mr_client_preferences_disconnect(c);
     mr_compat_client_disconnected(c);
     if (macremote_input_original.disconnect)
         macremote_input_original.disconnect(s, c);
@@ -114,12 +187,14 @@ static bool macremote_input_attach(rdpShadowServer *server)
         !server->subsystem->ExtendedMouseEvent)
         return false;
     mr_compat_initialize(NULL);
+    macremote_input_original.connect = server->subsystem->ClientConnect;
     macremote_input_original.keyboard = server->subsystem->KeyboardEvent;
     macremote_input_original.unicode = server->subsystem->UnicodeKeyboardEvent;
     macremote_input_original.mouse = server->subsystem->MouseEvent;
     macremote_input_original.extended_mouse = server->subsystem->ExtendedMouseEvent;
     macremote_input_original.disconnect = server->subsystem->ClientDisconnect;
 
+    server->subsystem->ClientConnect = macremote_connect;
     server->subsystem->KeyboardEvent = macremote_keyboard;
     server->subsystem->UnicodeKeyboardEvent = macremote_unicode;
     server->subsystem->MouseEvent = macremote_mouse;
@@ -214,19 +289,22 @@ static int serve(uint16_t port, const char *bind_address, MRGraphicsMode graphic
 {
     /* Register the statically linked native macOS Shadow backend directly:
      * avoids loading it a second time from the subsystem dylib. */
-    shadow_subsystem_set_entry(ShadowSubsystemEntry);
+    shadow_subsystem_set_entry(mr_remote_audio_shadow_entry);
     shadow_channels_set_clipboard_hooks(mr_clipboard_client_connect,
                                          mr_clipboard_client_disconnect);
     rdpShadowServer *server = shadow_server_new();
     if (!server) return 1;
 
     bool initialized = false;
+    bool displayObserverRegistered = false;
     int result = 1;
     server->port = port;
     server->authentication = TRUE;
     server->mayView = TRUE;
     server->mayInteract = TRUE;
     server->maxClientsConnected = 0; /* No artificial product cap. */
+    /* Prioritize text quality on large redraws; unchanged frames aren't sent. */
+    server->h264BitRate = 4000000;
     server->ConfigPath = config_path();
 
     if (bind_address)
@@ -254,6 +332,13 @@ static int serve(uint16_t port, const char *bind_address, MRGraphicsMode graphic
         fputs("error: MacRemote keyboard bridge initialization failed\n", stderr);
         goto cleanup;
     }
+    mr_client_preferences_init(server->ConfigPath);
+    shadow_client_set_avc420_bitrate_provider(mr_client_preferences_video_bitrate);
+    if (CGDisplayRegisterReconfigurationCallback(macremote_display_reconfiguration, NULL)
+        == kCGErrorSuccess)
+        displayObserverRegistered = true;
+    else
+        fputs("[MacRemote display] WARNING: display change notification registration failed\n", stderr);
     if (shadow_server_start(server) < 0)
     {
         fputs("error: FreeRDP listener failed (port in use or missing permissions)\n",
@@ -270,11 +355,22 @@ static int serve(uint16_t port, const char *bind_address, MRGraphicsMode graphic
     printf("Input: native Quartz + built-in rule compatibility | %s\n", input_status);
     fflush(stdout);
 
-    while (!stop_requested) Sleep(200);
+    while (!stop_requested)
+    {
+        /* Quartz notifies command-line processes only if their event-processing
+         * thread services the CFRunLoop. A bare WinPR Sleep leaves resolution
+         * changes invisible to the ScreenCaptureKit shadow subsystem. */
+        (void)CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.10, true);
+        Sleep(80);
+    }
     result = 0;
 
 cleanup:
+    if (displayObserverRegistered)
+        (void)CGDisplayRemoveReconfigurationCallback(macremote_display_reconfiguration, NULL);
     if (initialized) (void)shadow_server_uninit(server);
+    shadow_client_set_avc420_bitrate_provider(NULL);
+    mr_client_preferences_shutdown();
     shadow_channels_set_clipboard_hooks(NULL, NULL);
     mr_clipboard_shutdown();
     mac_shadow_set_input_filter(NULL);

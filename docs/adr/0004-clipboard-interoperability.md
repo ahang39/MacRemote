@@ -1,6 +1,6 @@
 # ADR-0004: Clipboard fidelity and input-method interoperability
 
-- Status: **Proposed — M1 investigation required**
+- Status: **Accepted — implementation under real-client verification**
 - Date: 2026-11-13
 - Priority: P0 plain-text clipboard; other formats deferred
 
@@ -70,3 +70,14 @@ Before calling text clipboard support production-ready, the reproducible WeChat 
 - [Microsoft MS-RDPECLIP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/)
 - [Microsoft clipboard interaction](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/9a784d09-bf53-4362-995d-a20d0eb5f074)
 - [Microsoft CF_UNICODETEXT newline convention](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dclb/53128a2c-84ad-464e-8a12-75c5da932237)
+
+
+## Implementation checkpoint (2026-11-16)
+
+The CLIPRDR session bridge and format codec are separate modules. The native
+macOS clipboard keeps LF; Windows wire text uses CRLF. Format announcements
+retain immutable snapshots, and remote text/image formats are retrieved before
+one pasteboard update. Native tests cover newline fidelity, mixed formats,
+image conversion, echo prevention, and snapshot consistency.
+
+Real-client image transfer and IME regression tests remain open.

@@ -11,7 +11,7 @@ original licenses.** Publishing MacRemote under PolyForm does not relicense them
 | Dependency | Use | Upstream licensing |
 | --- | --- | --- |
 | [FreeRDP / WinPR](https://github.com/FreeRDP/FreeRDP) | RDP server and channels, including MacRemote integration patches against pinned FreeRDP 3.33.1 | Apache License 2.0 |
-| [OpenSSL](https://www.openssl.org/source/license.html) | TLS and cryptography | Apache License 2.0 (OpenSSL 4) |
+| [OpenSSL](https://www.openssl.org/source/license.html) | TLS and cryptography | Apache License 2.0 (OpenSSL 3.5 LTS) |
 | [Opus](https://opus-codec.org/license/) | Audio encoding | BSD-style license |
 | [json-c](https://github.com/json-c/json-c) | JSON processing | MIT license |
 

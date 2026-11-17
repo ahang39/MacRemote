@@ -1,6 +1,6 @@
 # Testing and Benchmark Specification
 
-Status: **M1 and M2 measurements available; current TLS/PAM Mac-account login has an invalid-login integration test, successful mstsc login pending**
+Status: **M1/M2 measurements available; native Windows MSTSC TLS/PAM login and core input/display regression observed on 2026-11-16**. Open issues and coverage are recorded in [the current full regression](qa/2026-11-16-full-regression.md).
 
 ## 1. Test principles
 
@@ -16,7 +16,9 @@ Status: **M1 and M2 measurements available; current TLS/PAM Mac-account login ha
 | --- | --- |
 | Connection | New connection, reconnect, wrong credentials, unauthorized session |
 | mstsc compatibility | TLS+PAM Mac account login, display reconnect, clipboard/channel capability negotiation |
-| Display | 1080p physical display, changed resolution, sleep/wake, cursor motion |
+| Display | First RDP connection preserves current mode, user-selected HiDPI mode is recorded per machine, correct logical/backing sizes, mouse coordinates, reconnect, UU/local coexistence, sleep/wake (ADR-0009) |
+| RDP output/scaling | Editable 16:9 output width/height, two baseline choices plus custom WxH, eight nonlinear scale choices, hidden fixed 3% existing-HiDPI reuse threshold, near-16:9 checks and draft-only selection, explicit creation/restart-required/unsupported/apply mode states, independent transport pixels, 2x backing capture, cursor/mouse/drag/resize, existing display override preservation (ADR-0010) |
+| Remote audio | Drag 100% → 25% → 0% during playback, mute/unmute at 25%, reconnect two devices with different preferences, disconnect the primary while both are connected, check local Mac playback throughout |
 | Input | Mouse buttons, drag, long press, wheel, keyboard left/right modifiers, Command/Option, IME, Caps Lock, release on disconnect |
 | Karabiner parity | Absent/present; physical vs remote; global and device-specific rules; Fn/Globe, Alt+Tab, Ctrl+Arrow, Ctrl+Insert, F11; no extra adapter |
 | Extended keys | Bare Insert/Help, Ctrl+Insert, Shift+Insert, Print Screen vs numpad `*`, Home/End | Preserve extended scan codes, no unintended Help or duplicate transformations |
@@ -91,25 +93,31 @@ review. See [ADR-0007](adr/0007-native-macos-login.md).
 
 ## 9. Current Alpha: native macOS account password
 
-- CTest now has four test groups: version, doctor, invalid port and CLI option
-  checks. Status reports the current Mac user, TLS+PAM, all-interface listening,
-  enabled keyboard/mouse and no imposed client cap. Obsolete pairing commands
-  are rejected.
+- CTest covers CLI contracts, native input, display geometry and preferences,
+  codecs, and CLIPRDR. Clipboard callback tests cover overlapping format
+  announcements and a new local copy during an outstanding remote request.
+- The native remote audio test drives the production capture callback with
+  synthetic stereo samples and decodes the Opus packets submitted to
+  `rdpsnd`. It checks 640 bytes per 20 ms, 0 bytes during mute, and stale
+  packet rejection on unmute. Swift tests cover updates to legacy profiles
+  and preserved display fields. Client playback, format negotiation and
+  end-to-end timing require real RDP sessions.
 - The [real TLS/PAM loopback test](../tests/test_loopback.py) starts MacRemote
   with an explicit 127.0.0.1 test bind and an ephemeral port; the headless
   FreeRDP client negotiates TLS, supplies a *nonexistent* username, reaches
   macOS Shadow PAM, and is refused without receiving desktop pixels. This
   avoids supplying the user's actual password or risking lockouts.
-- The actual Mac account password happy path and Windows mstsc interoperability
-  have **not yet been verified**. An interactive client with the user entering
-  their own existing Mac password is necessary; no password must be sent here.
-- The standalone App build executes the full CTest suite before signing.
-  Service-crash test: SIGKILL the server (with no active client), verify the
-  menu-bar controller relaunches it and the configured TCP port listens again. Local RDP
-  X.224 connection/setup/close repeated three times also passed.
-- Native menu-bar bundle builds and local signature validates. FreeRDP,
-  crypto and codec dependencies are bundled, including the OpenSSL provider;
-  public Developer ID notarization remains outstanding.
+- The actual Windows mstsc login happy path **was verified on 2026-11-16**
+  using the Windows interactive console session and an already-saved system
+  credential; no password was read or exported. Display, pointer and
+  bidirectional text/partial image clipboard regression results are recorded in
+  [the full report](qa/2026-11-16-full-regression.md).
+- The standalone App build executes CTest and Swift regressions before signing.
+  The process lifecycle test uses a helper that exits without opening a port
+  and verifies that Stop cancels scheduled recovery. Live crash recovery was
+  exercised separately in the [Windows regression](qa/2026-11-16-full-regression.md).
+- Packaging audits every executable, bundled dylib and the OpenSSL provider.
+  The provider must resolve to the same libcrypto that the server bundles.
 - Other release gates: H.264/AVC444, clipboard/IME, Karabiner-native input,
   correct certificate trust for Mac login credentials, signing/notarization,
   installer, real LAN load and long-running stability.

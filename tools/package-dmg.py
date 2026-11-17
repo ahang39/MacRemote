@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +38,8 @@ def main() -> None:
     if app.suffix != ".app" or not (app / "Contents/MacOS/MacRemote").is_file():
         raise SystemExit("Not a MacRemote application bundle")
 
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    minimum = info["LSMinimumSystemVersion"]
     libroot = app / "Contents/Frameworks"
     libs = sorted(libroot.rglob("*.dylib"))
     for lib in libs:
@@ -48,7 +51,7 @@ def main() -> None:
         if not (legal / name).is_file():
             raise SystemExit("Required license/notice missing: " + name)
 
-    executables = [app / "Contents/MacOS/MacRemote", app / "Contents/MacOS/macremote-server"]
+    executables = [path for path in (app / "Contents/MacOS").iterdir() if path.is_file()]
     for executable in [*executables, *libs]:
         arches = run("lipo", "-archs", str(executable)).split()
         if args.arch not in arches:
@@ -81,6 +84,7 @@ def main() -> None:
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     print(f"DMG={out}")
     print(f"ARCH={args.arch}")
+    print(f"MINIMUM_MACOS={minimum}")
     print(f"LIBRARIES={len(libs)}")
     print(f"SHA256={digest}")
 

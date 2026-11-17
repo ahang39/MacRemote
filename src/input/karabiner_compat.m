@@ -7,6 +7,7 @@
 #import <sys/stat.h>
 #import <stdint.h>
 #import <string.h>
+#import <time.h>
 
 static NSRecursiveLock *mr_lock;
 static NSString *mr_path;
@@ -18,7 +19,7 @@ static NSUInteger mr_native_window_rules;
 static struct stat mr_file_stat;
 static BOOL mr_file_exists;
 static BOOL mr_first_load;
-static CFAbsoluteTime mr_next_check;
+static uint64_t mr_next_check;
 static _Thread_local const void *mr_client;
 static _Thread_local BOOL mr_unicode_input;
 
@@ -334,7 +335,9 @@ static NSDictionary *mr_make_rule(NSDictionary *manipulator)
     if (!mr_valid_string_array(mandatory) || !mr_valid_string_array(optional)) return nil;
     for (NSString *name in [mandatory arrayByAddingObjectsFromArray:optional])
         if (![name isEqual:@"any"] && !mr_mask_for_modifier(name)) return nil;
-    if ([(NSDictionary *)from count] > (source || sourceButton ? 2 : 1)) return nil;
+    if ([(NSDictionary *)from count] != 1 + (NSUInteger)(from[@"modifiers"] != nil) ||
+        modifiers.count != (NSUInteger)(modifiers[@"mandatory"] != nil) +
+                           (NSUInteger)(modifiers[@"optional"] != nil)) return nil;
 
     NSArray *destinations = manipulator[@"to"] ?: @[];
     if (![destinations isKindOfClass:NSArray.class] || destinations.count > 1) return nil;
@@ -382,9 +385,9 @@ static NSDictionary *mr_make_rule(NSDictionary *manipulator)
 
 static void mr_reload_if_needed(BOOL force)
 {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (!force && now < mr_next_check) return;
-    mr_next_check = now + 0.25;
+    mr_next_check = now + 250 * NSEC_PER_MSEC;
     if (!mr_path) return;
     struct stat st;
     BOOL exists = stat(mr_path.fileSystemRepresentation, &st) == 0;
@@ -402,6 +405,7 @@ static void mr_reload_if_needed(BOOL force)
         mr_native_window_rules = 0;
         return;
     }
+    mr_file_stat = st;
     NSData *data = [NSData dataWithContentsOfFile:mr_path options:0 error:nil];
     id root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if (![root isKindOfClass:NSDictionary.class])
@@ -410,11 +414,14 @@ static void mr_reload_if_needed(BOOL force)
     if (![profiles isKindOfClass:NSArray.class])
         return;
     NSDictionary *selected = nil;
-    for (id p in profiles)
-        if ([p isKindOfClass:NSDictionary.class] && [p[@"selected"] boolValue]) {
-            selected = p;
+    for (id profile in profiles) {
+        if (![profile isKindOfClass:NSDictionary.class]) continue;
+        id flag = profile[@"selected"];
+        if ([flag isKindOfClass:NSNumber.class] && [flag boolValue]) {
+            selected = profile;
             break;
         }
+    }
     if (!selected && profiles.count && [profiles[0] isKindOfClass:NSDictionary.class])
         selected = profiles[0];
     id modifications = selected[@"complex_modifications"];
@@ -426,7 +433,9 @@ static void mr_reload_if_needed(BOOL force)
     NSUInteger skipped = 0;
     for (id rule in rules) {
         if (![rule isKindOfClass:NSDictionary.class]) continue;
-        if (rule[@"enabled"] && ![rule[@"enabled"] boolValue]) continue;
+        id enabled = rule[@"enabled"];
+        if (enabled && (![enabled isKindOfClass:NSNumber.class] || ![enabled boolValue]))
+            continue;
         id manipulators = rule[@"manipulators"];
         if (![manipulators isKindOfClass:NSArray.class]) {
             skipped++;
@@ -445,7 +454,6 @@ static void mr_reload_if_needed(BOOL force)
     for (NSDictionary *rule in mr_rules)
         if ([rule[@"nativeWindowAction"] integerValue] != MRWindowNone)
             mr_native_window_rules++;
-    mr_file_stat = st;
 }
 
 static BOOL mr_modifiers_match(NSDictionary *rule, CGEventFlags flags)

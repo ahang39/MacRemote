@@ -6,11 +6,19 @@ MacRemote directly links the native FreeRDP 3.33.1 Shadow Server library on macO
 
     tools/build-dev-app.sh
 
-The signed standalone App includes FreeRDP 3.33.1, its required runtime
-dependencies, OpenSSL, and its dynamically loaded legacy provider.
-When no FreeRDP checkout exists, the script fetches the pinned upstream
-release, applies MacRemote patches, builds it and deletes the temporary
-source/build tree. No permanent FreeRDP project is needed to run the App.
+The standalone App packages its FreeRDP 3.33.1 runtime, OpenSSL 3.5
+LTS, Opus, json-c and the OpenSSL legacy provider. The build downloads
+version-locked, SHA-256-verified sources, compiles the dependencies for
+macOS 14 and retains incremental build trees under Git-ignored .build/:
+
+- .build/downloads/ and .build/sources/: source archives and patched FreeRDP
+- .build/{arch}/prefix/ and .build/{arch}/build/: private dependencies
+- .build/output/: signed standalone applications
+
+Homebrew may supply build tools, but its precompiled libraries are never
+linked or bundled. Packaging rejects any Mach-O with minos greater than
+14.0 or an external dynamic-library dependency. Changes in the pinned
+FreeRDP patch series produce a separate cached source/build pair.
 The default build uses ad-hoc code signing. Set MACREMOTE_SIGN_IDENTITY to a Keychain identity for stable local signing; this is not Developer ID notarization.
 
 ## CLI
@@ -19,8 +27,8 @@ The default build uses ad-hoc code signing. Set MACREMOTE_SIGN_IDENTITY to a Key
     /Applications/MacRemote.app/Contents/MacOS/macremote-server doctor
     /Applications/MacRemote.app/Contents/MacOS/macremote-server serve --port 3389
 
-The default graphics mode is Classic. Other graphics modes remain
-experimental CLI-only options.
+The CLI defaults to Classic. The menu starts the server with AVC420
+unless an existing Classic preference selects the compatibility path.
 
 **Login:** use the Mac username and the user's ordinary Mac login password in the RDP client. No pairing, RDP-only password or SAM file. Upstream macOS Shadow authenticates the logged-in process account using PAM under TLS (NLA disabled). Certificate verification matters when using a real Mac login password over a network; avoid accepting unexpected certificates.
 
@@ -37,18 +45,9 @@ channel read. The Windows client reported 0xD06. These observations point
 to a graphics/finalization interoperability problem, not a rejected password,
 but do not prove the root cause.
 
-The production menu now uses the Windows mstsc-verified Classic
-graphics path automatically. Experimental AVC420/AVC444 and Balanced
-remain available to developers through the server --gfx CLI only.
-No graphics selection or placeholder transfer-statistics rows appear
-in the menu. The menu-bar popover closes on outside clicks.
-
-
 ## Menu bar development App
 
-    tools/build-dev-app.sh
-
-The app is placed in a unique timestamped directory under ~/Library/Caches/MacRemote/product. Clicking the native AppKit NSStatusItem opens the complete SwiftUI settings popover directly, with no extra action menu. The same dismissible popover opens when the app is activated from Finder or Spotlight. The native status item belongs to the registered MacRemote application and is managed by macOS and compatible menu bar managers, without launcher indirection. The panel displays Mac login, TLS+PAM, configurable port, Start/Stop and Screen Recording permissions. App launch does not automatically start sharing. Development Apps are ad-hoc signed by default; MACREMOTE_SIGN_IDENTITY selects a stable local identity. The bundle identifier is dev.macremote.app and the App has a native .icns icon. The App includes all runtime dependencies and needs no M1 cache; public Developer ID notarization is still outstanding.
+The app is placed in a unique timestamped directory under .build/output/. Clicking the native AppKit NSStatusItem opens the complete SwiftUI settings popover directly, with no extra action menu. The same dismissible popover opens when the app is activated from Finder or Spotlight. The native status item belongs to the registered MacRemote application and is managed by macOS and compatible menu bar managers, without launcher indirection. The panel displays Mac login, TLS+PAM, configurable port, Start/Stop and Screen Recording permissions. App launch does not automatically start sharing. Development Apps are ad-hoc signed by default; MACREMOTE_SIGN_IDENTITY selects a stable local identity. The bundle identifier is dev.macremote.app and the App has a native .icns icon. The App includes all runtime dependencies and needs no M1 cache; public Developer ID notarization is still outstanding.
 
 ## Menu bar compatibility
 
@@ -71,8 +70,7 @@ checks both its own and the capture helper's access.
 
 Select Enable Screen Recording in the MacRemote settings, then allow MacRemote
 in System Settings → Privacy & Security → Screen & System Audio Recording.
-macOS may require quitting and reopening the app. The GUI invokes Apple's
-normal consent prompt; it cannot silently grant itself this permission.
+macOS may require quitting and reopening the app.
 
 The menu bar popover must use SwiftUI's intrinsic content size. The previous
 fixed height (530pt versus ~345pt actual content) shifted the popover down
@@ -81,10 +79,11 @@ restores proper anchoring; icon click must not activate a separate window.
 
 ## Tests
 
-Every standalone App build executes 11 CTests and the Swift listen-port
-persistence test before signing. The FreeRDP source and build directories
-are temporary, including for tests. A clean bootstrap build and codesign
-verification have passed without a pre-existing FreeRDP project.
+Every standalone App build executes 16 CTests and the Swift port, device
+preferences and server lifecycle regressions before signing. The FreeRDP
+source and build trees are Git-ignored and reused for incremental compilation.
+The build verifies macOS 14 deployment targets, all runtime dependencies
+and code signing.
 
 Portable runtime verification: while the standalone App is running,
 check the selected listening port (3389 by default) and inspect the server process loaded modules;
@@ -133,22 +132,19 @@ the previous saved value.
   MacRemote deliberately reuses that mechanism rather than adding a second
   capture watchdog.
 - The menu-bar controller owns the native server process. Unexpected server
-  exit triggers one automatic restart; explicit Stop/Quit never restarts it.
+  exit triggers up to five restart attempts with exponential backoff.
+  Stop and Quit cancel pending recovery.
   After system wake, the UI refreshes its recording-permission state while
   FreeRDP handles capture recovery.
 - A disconnected RDP client releases held keys and the original left mouse
   button; the last disconnected client clears FreeRDP's modifier and
   mouse-drag state.
-- The standalone build runs CTest before signing and bundling. Latest clean
-  build: 11/11 green. Actual crash-kill recovery and three consecutive
-  new TCP/X.224 RDP negotiations passed on the Mac.
-- Real Windows mstsc reauthentication and physical sleep/monitor-change
-  acceptance remain client-side/manual tests; the TCP negotiation test
-  does not exercise an authenticated desktop session.
+- See the [Windows regression](../qa/2026-11-16-full-regression.md) for observed
+  service recovery and interactive client coverage.
 
 ## Pending release milestones
 
-- Real Windows mstsc: successful macOS password login, reconnect, H.264/AVC444, image quality and password/certificate UI.
+- Real Windows mstsc: H.264/AVC444, image quality and password/certificate UI.
 - Real Windows mstsc acceptance of built-in Karabiner basic-rule compatibility, window actions, Insert/Help, and IME semantics.
 - Bidirectional RDP clipboard with macOS/WeChat IME newline and duplicate paste fixes.
 - Negotiated codec, frame/bytes and RTT telemetry.

@@ -1,29 +1,31 @@
 #import "mac_clipboard.h"
+#import "clipboard_formats.h"
 
 #import <AppKit/AppKit.h>
 #import <freerdp/server/cliprdr.h>
 #import <winpr/user.h>
 #import <dispatch/dispatch.h>
-#import <pthread.h>
-#import <stdlib.h>
-#import <string.h>
+#include <strings.h>
 
-#define MR_CLIPBOARD_TEXT_FORMAT CF_UNICODETEXT
 #define MR_CLIPBOARD_PNG_FORMAT 0xC001
 
-/* A single native clipboard is shared by all RDP clients. Their cliprdr
- * channels remain independent; the RDP server and AppKit are the only
- * runtime components. */
+typedef struct {
+    UINT32 text;
+    UINT32 image;
+} MRClipboardFormats;
+
 @interface MRClipboardSession : NSObject
-@property(nonatomic,assign) rdpShadowClient *client;
 @property(nonatomic,assign) CliprdrServerContext *channel;
 @property(nonatomic,assign) BOOL closing;
 @property(nonatomic,assign) BOOL ready;
-@property(nonatomic,assign) BOOL textOffered;
 @property(nonatomic,assign) NSInteger lastChange;
 @property(nonatomic,copy) NSString *snapshot;
 @property(nonatomic,strong) NSData *imageSnapshot;
 @property(nonatomic,assign) UINT32 pendingRemoteFormat;
+@property(nonatomic,assign) MRClipboardFormats remoteFormats;
+@property(nonatomic,assign) BOOL discardResponse;
+@property(nonatomic,assign) NSInteger remoteOfferChange;
+@property(nonatomic,copy) NSString *receivedText;
 @end
 @implementation MRClipboardSession
 @end
@@ -32,128 +34,15 @@ static NSRecursiveLock *mr_clipboard_lock;
 static NSMutableDictionary<NSValue*,MRClipboardSession*> *mr_clipboard_sessions;
 static dispatch_source_t mr_clipboard_timer;
 static NSInteger mr_clipboard_last_seen = -1;
-/* Tests use an isolated pasteboard; production always uses the system board. */
-static NSPasteboard *mr_clipboard_test_pasteboard;
+static NSPasteboard *mr_clipboard_pasteboard;
 static NSPasteboard *mr_board(void)
 {
-    return mr_clipboard_test_pasteboard ?: [NSPasteboard generalPasteboard];
-}
-
-
-char *mr_clipboard_crlf_utf8(const char *text)
-{
-    if (!text) return NULL;
-    size_t size = strlen(text);
-    if (size > (SIZE_MAX - 1)/2) return NULL;
-    char *out = malloc(size * 2 + 1);
-    if (!out) return NULL;
-    size_t w=0;
-    for (size_t i=0; i<size; i++) {
-        char c=text[i];
-        if (c == '\r') {
-            if (i+1<size && text[i+1]=='\n') i++;
-            out[w++]='\r';
-            out[w++]='\n';
-        } else if (c == '\n') {
-            out[w++]='\r';
-            out[w++]='\n';
-        } else {
-            out[w++]=c;
-        }
-    }
-    out[w]='\0';
-    return out;
-}
-
-static NSString *mr_windows_lines(NSString *text)
-{
-    if (!text) return nil;
-    /* Replacing CRLF before solitary CR/LF makes this transformation
-     * idempotent; output is always Windows CRLF, even on the Mac pasteboard. */
-    NSString *s=[text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
-    s=[s stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
-    return [s stringByReplacingOccurrencesOfString:@"\n" withString:@"\r\n"];
-}
-
-static NSString *mr_mac_text(void)
-{
-    return mr_windows_lines([mr_board() stringForType:NSPasteboardTypeString]);
-}
-
-/* CoreGraphics/AppKit already understands BMP/PNG/TIFF; RDP's CF_DIB is
- * precisely BMP with its 14-byte BITMAPFILEHEADER removed. */
-static NSData *mr_mac_png(void)
-{
-    NSPasteboard *pb=mr_board();
-    NSData *png=[pb dataForType:NSPasteboardTypePNG];
-    if (png) return png;
-    NSData *tiff=[pb dataForType:NSPasteboardTypeTIFF];
-    if (!tiff) return nil;
-    NSBitmapImageRep *rep=[NSBitmapImageRep imageRepWithData:tiff];
-    return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-}
-static uint32_t mr_le32(const uint8_t *p)
-{
-    return ((uint32_t)p[0])|((uint32_t)p[1]<<8)|
-           ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
-}
-static void mr_put32(uint8_t *p, uint32_t value)
-{
-    for (NSUInteger i=0;i<4;i++) p[i]=(uint8_t)(value >> (8*i));
-}
-static NSData *mr_png_to_dib(NSData *png)
-{
-    if (!png) return nil;
-    NSBitmapImageRep *rep=[NSBitmapImageRep imageRepWithData:png];
-    NSData *bmp=[rep representationUsingType:NSBitmapImageFileTypeBMP properties:@{}];
-    const uint8_t *bytes=bmp.bytes;
-    if (bmp.length<=54 || bytes[0]!='B' || bytes[1]!='M') return nil;
-    return [bmp subdataWithRange:NSMakeRange(14,bmp.length-14)];
-}
-static NSData *mr_dib_to_png(const uint8_t *bytes, size_t count)
-{
-    if (!bytes || count<40 || count>UINT32_MAX-14) return nil;
-    uint32_t headerSize=mr_le32(bytes);
-    if (headerSize<40 || headerSize>count) return nil;
-    uint16_t bits=(uint16_t)(bytes[14]|((uint16_t)bytes[15]<<8));
-    uint32_t colors=mr_le32(bytes+32);
-    uint32_t offset=headerSize;
-    if (bits<=8) offset += (colors ? colors : (1u<<bits))*4u;
-    else if (headerSize==40 && mr_le32(bytes+16)==3) offset+=12;
-    if (offset>count) return nil;
-    NSMutableData *bmp=[NSMutableData dataWithLength:14];
-    uint8_t *head=bmp.mutableBytes;
-    head[0]='B';head[1]='M';
-    mr_put32(head+2,(uint32_t)count+14);
-    mr_put32(head+10,offset+14);
-    [bmp appendBytes:bytes length:count];
-    NSBitmapImageRep *rep=[NSBitmapImageRep imageRepWithData:bmp];
-    return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-}
-
-static NSData *mr_utf16le_with_nul(NSString *text)
-{
-    NSData *utf16 = [mr_windows_lines(text ?: @"") dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
-    NSMutableData *data=[NSMutableData dataWithData:utf16 ?: NSData.data];
-    uint8_t nul[2]={0,0};
-    [data appendBytes:nul length:2];
-    return data;
-}
-
-static NSString *mr_parse_utf16le(const BYTE *bytes, size_t length)
-{
-    if (!bytes || length < 2 || (length % 2)) return nil;
-    size_t end=length;
-    for (size_t i=0;i+1<length;i+=2)
-        if (bytes[i]==0 && bytes[i+1]==0) { end=i;break; }
-    NSData *data=[NSData dataWithBytes:bytes length:end];
-    NSString *text=[[NSString alloc] initWithData:data encoding:NSUTF16LittleEndianStringEncoding];
-    return mr_windows_lines(text);
+    return mr_clipboard_pasteboard ?: NSPasteboard.generalPasteboard;
 }
 
 static void mr_clipboard_offer(MRClipboardSession *session, NSString *text, NSData *png)
 {
-    if (!session || session.closing || !session.ready || !session.channel) return;
+    if (!session.ready) return;
     CLIPRDR_FORMAT formats[3]={0};
     UINT32 count=0;
     if (text) {
@@ -189,14 +78,8 @@ static void mr_clipboard_poll(void)
         return;
     }
     mr_clipboard_last_seen=change;
-    NSString *source=[pb stringForType:NSPasteboardTypeString];
-    NSString *text=mr_windows_lines(source);
-    if (source && ![source isEqualToString:text]) {
-        /* Windows CRLF on the Mac pasteboard as well. Preserve other types. */
-        if ([pb setString:text forType:NSPasteboardTypeString])
-            mr_clipboard_last_seen=change=pb.changeCount;
-    }
-    NSData *png=mr_mac_png();
+    NSString *text = [pb stringForType:NSPasteboardTypeString];
+    NSData *png = mr_clipboard_png_from_pasteboard(pb);
     for (MRClipboardSession *session in mr_clipboard_sessions.allValues) {
         if (session.lastChange==change) continue;
         session.lastChange=change;
@@ -230,92 +113,146 @@ static UINT mr_client_capabilities(CliprdrServerContext *channel,
     MRClipboardSession *session=mr_session(channel);
     [mr_clipboard_lock lock];
     if (!session.closing) {
-        session.ready=YES;
-        mr_clipboard_offer(session,mr_mac_text(),mr_mac_png());
+        NSPasteboard *board = mr_board();
+        session.ready = YES;
+        session.lastChange = board.changeCount;
+        mr_clipboard_offer(session, [board stringForType:NSPasteboardTypeString],
+                           mr_clipboard_png_from_pasteboard(board));
     }
     [mr_clipboard_lock unlock];
     return CHANNEL_RC_OK;
+}
+
+// CLIPRDR responses carry no format ID. Keep one request in flight and retain
+// only the latest offer while waiting for a superseded response to drain.
+static UINT mr_request_next_format(MRClipboardSession *session)
+{
+    MRClipboardFormats formats = session.remoteFormats;
+    UINT32 format;
+    if (formats.text) {
+        format = formats.text;
+        formats.text = 0;
+    } else {
+        format = formats.image;
+        formats.image = 0;
+    }
+    if (!format) return CHANNEL_RC_OK;
+
+    session.remoteFormats = formats;
+    session.pendingRemoteFormat = format;
+    CLIPRDR_FORMAT_DATA_REQUEST request = {0};
+    request.common.msgType = CB_FORMAT_DATA_REQUEST;
+    request.requestedFormatId = format;
+    CliprdrServerContext *channel = session.channel;
+    return channel->ServerFormatDataRequest(channel, &request);
 }
 
 static UINT mr_client_format_list(CliprdrServerContext *channel,
                                  const CLIPRDR_FORMAT_LIST *list)
 {
-    MRClipboardSession *session=mr_session(channel);
-    CLIPRDR_FORMAT_LIST_RESPONSE response={0};
-    response.common.msgType=CB_FORMAT_LIST_RESPONSE;
-    response.common.msgFlags=CB_RESPONSE_OK;
-    UINT rc=channel->ServerFormatListResponse(channel,&response);
-    if (rc!=CHANNEL_RC_OK) return rc;
+    CLIPRDR_FORMAT_LIST_RESPONSE response = {0};
+    response.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_OK;
+    UINT rc = channel->ServerFormatListResponse(channel, &response);
+    if (rc != CHANNEL_RC_OK) return rc;
 
-    UINT32 format=0;
-    UINT32 png=0, dib=0, text=0;
-    for (UINT32 i=0;i<list->numFormats;i++) {
-        const CLIPRDR_FORMAT *f=&list->formats[i];
-        if (f->formatId==CF_UNICODETEXT) text=f->formatId;
-        if (f->formatId==CF_DIB) dib=f->formatId;
-        if (f->formatName && strcasecmp(f->formatName,"PNG")==0)
-            png=f->formatId;
+    UINT32 png = 0, dib = 0, text = 0;
+    for (UINT32 i = 0; i < list->numFormats; i++) {
+        const CLIPRDR_FORMAT *format = &list->formats[i];
+        if (format->formatId == CF_UNICODETEXT) text = format->formatId;
+        if (format->formatId == CF_DIB) dib = format->formatId;
+        if (format->formatName && strcasecmp(format->formatName, "PNG") == 0)
+            png = format->formatId;
     }
-    /* Prefer native Unicode text for mixed rich content. When the source
-     * is a screenshot/image, standard CF_DIB or negotiated PNG is used. */
-    format=text ? text : png ? png : dib;
+
+    MRClipboardSession *session = mr_session(channel);
     [mr_clipboard_lock lock];
-    session.textOffered=(format==CF_UNICODETEXT);
-    session.pendingRemoteFormat=format;
-    [mr_clipboard_lock unlock];
-    if (format) {
-        CLIPRDR_FORMAT_DATA_REQUEST request={0};
-        request.common.msgType=CB_FORMAT_DATA_REQUEST;
-        request.requestedFormatId=format;
-        return channel->ServerFormatDataRequest(channel,&request);
+    if (!session.closing) {
+        session.remoteFormats = (MRClipboardFormats){text, png ? png : dib};
+        session.remoteOfferChange = mr_board().changeCount;
+        session.receivedText = nil;
+        session.discardResponse = session.pendingRemoteFormat != 0;
+        if (!session.discardResponse)
+            rc = mr_request_next_format(session);
     }
-    return CHANNEL_RC_OK;
+    [mr_clipboard_lock unlock];
+    return rc;
+}
+
+static void mr_commit_remote_clipboard(MRClipboardSession *session,
+                                      NSString *text, NSData *png)
+{
+    NSPasteboard *board = mr_board();
+    if ((!text && !png) || board.changeCount != session.remoteOfferChange)
+        return;
+
+    NSString *existingText = [board stringForType:NSPasteboardTypeString];
+    NSData *existingPNG = mr_clipboard_png_from_pasteboard(board);
+    BOOL sameText = text == existingText || [text isEqualToString:existingText];
+    BOOL sameImage = png == existingPNG || [png isEqualToData:existingPNG];
+    if (board.changeCount != session.remoteOfferChange)
+        return;
+    if (!sameText || !sameImage) {
+        [board clearContents];
+        if (text) [board setString:text forType:NSPasteboardTypeString];
+        if (png) [board setData:png forType:NSPasteboardTypePNG];
+    }
+
+    NSInteger change = board.changeCount;
+    mr_clipboard_last_seen = change;
+    session.lastChange = change;
+    for (MRClipboardSession *other in mr_clipboard_sessions.allValues) {
+        if (other == session) continue;
+        other.lastChange = change;
+        mr_clipboard_offer(other, text, png);
+    }
 }
 
 static UINT mr_client_data_response(CliprdrServerContext *channel,
                                     const CLIPRDR_FORMAT_DATA_RESPONSE *response)
 {
-    if (!(response->common.msgFlags & CB_RESPONSE_OK)) return CHANNEL_RC_OK;
-    MRClipboardSession *session=mr_session(channel);
+    MRClipboardSession *session = mr_session(channel);
     [mr_clipboard_lock lock];
-    if (session.closing) {
+    UINT rc = CHANNEL_RC_OK;
+    UINT32 format = session.pendingRemoteFormat;
+    if (session.closing || !format) {
         [mr_clipboard_lock unlock];
-        return CHANNEL_RC_OK;
+        return rc;
     }
-    UINT32 format=session.pendingRemoteFormat;
-    NSString *text=nil;
-    NSData *png=nil;
-    if (format==CF_UNICODETEXT)
-        text=mr_parse_utf16le(response->requestedFormatData,response->common.dataLen);
-    else if (format==CF_DIB)
-        png=mr_dib_to_png(response->requestedFormatData,response->common.dataLen);
-    else if (format)
-        png=[NSData dataWithBytes:response->requestedFormatData
-                           length:response->common.dataLen];
-    if (!text && !png) {
+
+    session.pendingRemoteFormat = 0;
+    if (session.discardResponse) {
+        session.discardResponse = NO;
+        rc = mr_request_next_format(session);
         [mr_clipboard_lock unlock];
-        return CHANNEL_RC_OK;
+        return rc;
     }
-    NSPasteboard *pb=mr_board();
-    NSString *existing=mr_mac_text();
-    NSData *existingPNG=mr_mac_png();
-    BOOL same=(text && [text isEqualToString:existing] && !existingPNG) ||
-              (png && [png isEqualToData:existingPNG] && !existing);
-    if (!same) {
-        [pb clearContents];
-        if (text) [pb setString:text forType:NSPasteboardTypeString];
-        if (png) [pb setData:png forType:NSPasteboardTypePNG];
-    }
-    mr_clipboard_last_seen=pb.changeCount;
-    session.lastChange=pb.changeCount;
-    /* Notify all OTHER Windows connections, no clipboard echo to the source. */
-    for (MRClipboardSession *other in mr_clipboard_sessions.allValues)
-        if (other!=session) {
-            other.lastChange=pb.changeCount;
-            mr_clipboard_offer(other,text,png);
+
+    NSString *text = session.receivedText;
+    NSData *png = nil;
+    if (response->common.msgFlags & CB_RESPONSE_OK) {
+        const BYTE *data = response->requestedFormatData;
+        size_t length = response->common.dataLen;
+        if (format == CF_UNICODETEXT)
+            text = mr_clipboard_decode_unicode(data, length);
+        else if (format == CF_DIB)
+            png = mr_clipboard_png_from_dib(data, length);
+        else if (data) {
+            NSData *encoded = [NSData dataWithBytes:data length:length];
+            if ([NSBitmapImageRep imageRepWithData:encoded])
+                png = encoded;
         }
+    }
+
+    if (session.remoteFormats.image) {
+        session.receivedText = text;
+        rc = mr_request_next_format(session);
+    } else {
+        session.receivedText = nil;
+        mr_commit_remote_clipboard(session, text, png);
+    }
     [mr_clipboard_lock unlock];
-    return CHANNEL_RC_OK;
+    return rc;
 }
 
 static UINT mr_client_data_request(CliprdrServerContext *channel,
@@ -328,11 +265,11 @@ static UINT mr_client_data_request(CliprdrServerContext *channel,
     [mr_clipboard_lock lock];
     if (!session.closing) {
         if (request->requestedFormatId==CF_UNICODETEXT)
-            payload=mr_utf16le_with_nul(session.snapshot ?: mr_mac_text());
+            payload=session.snapshot ? mr_clipboard_encode_unicode(session.snapshot) : nil;
         else if (request->requestedFormatId==MR_CLIPBOARD_PNG_FORMAT)
-            payload=session.imageSnapshot ?: mr_mac_png();
+            payload=session.imageSnapshot;
         else if (request->requestedFormatId==CF_DIB)
-            payload=mr_png_to_dib(session.imageSnapshot ?: mr_mac_png());
+            payload=mr_clipboard_dib_from_png(session.imageSnapshot);
     }
     [mr_clipboard_lock unlock];
     if (payload && payload.length<=UINT32_MAX) {
@@ -357,7 +294,6 @@ UINT mr_clipboard_client_connect(rdpShadowClient *client)
         CliprdrServerContext *channel=cliprdr_server_context_new(client->vcm);
         if (!channel) return ERROR_NOT_ENOUGH_MEMORY;
         MRClipboardSession *session=[MRClipboardSession new];
-        session.client=client;
         session.channel=channel;
         session.lastChange=-1;
         channel->custom=(__bridge void*)session;
@@ -399,10 +335,9 @@ void mr_clipboard_client_disconnect(rdpShadowClient *client)
             [mr_clipboard_sessions removeObjectForKey:key];
         }
         [mr_clipboard_lock unlock];
-        if (session && session.channel) {
+        if (session) {
             session.channel->Stop(session.channel);
             cliprdr_server_context_free(session.channel);
-            session.channel=NULL;
         }
     }
 }

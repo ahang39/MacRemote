@@ -31,7 +31,19 @@ jobs:
         run: |
           set -euo pipefail
           xcrun swiftc -parse-as-library -typecheck -swift-version 5 \
-            apps/macos/MacRemoteApp.swift apps/macos/ListenPortSettings.swift
+            apps/macos/MacRemoteApp.swift \
+            apps/macos/MacRemoteDelegate.swift \
+            apps/macos/MacRemoteMenu.swift \
+            apps/macos/ServerController.swift \
+            apps/macos/ListenPortSettings.swift \
+            apps/macos/DisplayModels.swift \
+            apps/macos/DisplayModeService.swift \
+            apps/macos/DisplayModeOperations.swift \
+            apps/macos/DisplayConfigurationStore.swift \
+            apps/macos/ClientDevicePreferences.swift \
+            apps/macos/DisplayOutputSettings.swift \
+            apps/macos/EditableResolutionComboBox.swift \
+            apps/macos/ServerRestartPolicy.swift
 
       - name: Port preference regression
         shell: bash
@@ -41,6 +53,26 @@ jobs:
             apps/macos/ListenPortSettings.swift tests/test_port_settings.swift \
             -o "$RUNNER_TEMP/test-port-settings"
           "$RUNNER_TEMP/test-port-settings"
+
+      - name: Display preferences and restart regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun swiftc -O -parse-as-library -swift-version 5 \
+            apps/macos/DisplayModels.swift \
+            apps/macos/DisplayModeService.swift \
+            apps/macos/DisplayModeOperations.swift \
+            apps/macos/DisplayConfigurationStore.swift \
+            apps/macos/ClientDevicePreferences.swift \
+            apps/macos/DisplayOutputSettings.swift \
+            tests/test_display_output_settings.swift \
+            -o "$RUNNER_TEMP/test-display"
+          "$RUNNER_TEMP/test-display"
+          xcrun swiftc -O -parse-as-library \
+            apps/macos/ServerController.swift apps/macos/ListenPortSettings.swift \
+            apps/macos/ServerRestartPolicy.swift tests/test_server_restart_policy.swift \
+            -o "$RUNNER_TEMP/test-restart"
+          "$RUNNER_TEMP/test-restart"
 
       - name: Karabiner compatibility regression
         shell: bash

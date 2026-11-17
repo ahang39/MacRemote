@@ -1,0 +1,389 @@
+diff --git a/server/shadow/Mac/mac_capture.m b/server/shadow/Mac/mac_capture.m
+index d46edaa..24f625f 100644
+--- a/server/shadow/Mac/mac_capture.m
++++ b/server/shadow/Mac/mac_capture.m
+@@ -19,6 +19,8 @@
+ #import <Foundation/Foundation.h>
+ #import <CoreMedia/CoreMedia.h>
+ #import <ScreenCaptureKit/ScreenCaptureKit.h>
++#include "macremote_surface_geometry.h"
++#include "macremote_capture_logical.h"
+ 
+ #include <stdatomic.h>
+ 
+@@ -38,6 +40,8 @@ @interface MacCaptureOutput : NSObject <SCStreamOutput, SCStreamDelegate>
+ {
+   @public
+ 	macCaptureConfig config;
++	BOOL fullFrameDamage;
++	unsigned initialFullFrames;
+ 	float *audioBuffer;
+ 	size_t audioBufferFrames;
+ 	/* the stream ended by itself: it must not be stopped again */
+@@ -116,6 +120,17 @@ - (void)onScreen:(CMSampleBufferRef)sampleBuffer
+ 		used = 1;
+ 	}
+ 
++	/* Scale/letterbox updates must cover the entire BGRA destination
++	 * (source-space damage rects are insufficient here). */
++	if (fullFrameDamage || initialFullFrames > 0)
++	{
++		if (initialFullFrames > 0)
++			initialFullFrames--;
++		rects[0] = CGRectMake(0, 0, (CGFloat)CVPixelBufferGetWidth(frame),
++		                      (CGFloat)CVPixelBufferGetHeight(frame));
++		used = 1;
++	}
++
+ 	config.onFrame(config.context, frame, rects, used);
+ 
+ 	if (rects != stackRects)
+@@ -301,6 +316,15 @@ BOOL mac_capture_check_access(void)
+ 		SCStreamConfiguration *streamConfig = [[SCStreamConfiguration alloc] init];
+ 		streamConfig.width = config->width;
+ 		streamConfig.height = config->height;
++		/* The RDP frame and Quartz input share one fitted viewport. */
++		CGRect logicalBounds = CGDisplayBounds(config->display);
++		(void)mr_capture_override_bounds(config->display, &logicalBounds);
++		const mrSurfaceViewport viewport = mr_surface_fit(
++		    logicalBounds.size.width, logicalBounds.size.height,
++		    config->width, config->height);
++		streamConfig.preservesAspectRatio = YES;
++		streamConfig.destinationRect = CGRectMake(viewport.left, viewport.top,
++		                                              viewport.width, viewport.height);
+ 		streamConfig.pixelFormat = kCVPixelFormatType_32BGRA;
+ 		streamConfig.colorSpaceName = kCGColorSpaceSRGB;
+ 		streamConfig.minimumFrameInterval = CMTimeMake(1, (int32_t)MAX(config->fps, 1));
+@@ -327,6 +351,13 @@ BOOL mac_capture_check_access(void)
+ 
+ 		capture->output = [[MacCaptureOutput alloc] init];
+ 		capture->output->config = capture->config;
++		capture->output->fullFrameDamage = mr_surface_scaled_capture(
++		    logicalBounds.size.width, logicalBounds.size.height,
++		    config->width, config->height, viewport);
++		capture->output->initialFullFrames = 3;
++		if (capture->output->fullFrameDamage)
++			WLog_INFO(TAG, "scaled capture: full local refresh for %ux%u output",
++			          config->width, config->height);
+ 		capture->stream = [[SCStream alloc] initWithFilter:filter
+ 		                                     configuration:streamConfig
+ 		                                          delegate:capture->output];
+diff --git a/server/shadow/Mac/mac_shadow.c b/server/shadow/Mac/mac_shadow.c
+index 1f9e24b..10877a2 100644
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -18,6 +18,11 @@
+  */
+ 
+ #include <math.h>
++#include "macremote_surface_geometry.h"
++#include "macremote_capture_logical.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <limits.h>
+ #include <pwd.h>
+ #include <unistd.h>
+ 
+@@ -178,6 +183,47 @@ static CGEventFlags mac_shadow_modifier_sides(CGEventFlags modifier)
+ /* The active displays, with their monitor rectangles moved so that the
+  * leftmost and topmost one start at 0 (the shadow surface cannot start
+  * below 0); bounds are left in global display coordinates. */
++/* MacRemote selects the RDP stream independently of the macOS logical
++ * display mode. ScreenCaptureKit scales HiDPI into the selected stream. */
++static BOOL mac_shadow_requested_stream_size(UINT32* width, UINT32* height)
++{
++    const char* home = getenv("HOME");
++    if (!home || !*home)
++        return FALSE;
++    char file[PATH_MAX];
++    const int needed = snprintf(file, sizeof(file),
++        "%s/Library/Application Support/MacRemote/display-output.conf", home);
++    if (needed <= 0 || (size_t)needed >= sizeof(file))
++        return FALSE;
++    FILE* config = fopen(file, "r");
++    if (!config)
++        return FALSE;
++    unsigned w = 0, h = 0;
++    const int n = fscanf(config, "%u %u", &w, &h);
++    fclose(config);
++    if (n != 2 || w < 800 || w > 8192 || h < 450 || h > 4320 ||
++        w % 2 != 0 || h % 2 != 0 || (uint64_t)w * 9 != (uint64_t)h * 16)
++        return FALSE;
++    *width = w;
++    *height = h;
++    return TRUE;
++}
++
++static void mac_shadow_output_dimensions(CGRect bounds, UINT32* width, UINT32* height,
++                                         UINT32 monitorCount)
++{
++    *width = (UINT32)bounds.size.width;
++    *height = (UINT32)bounds.size.height;
++    if (monitorCount == 1)
++        (void)mac_shadow_requested_stream_size(width, height);
++}
++
++static void mac_shadow_override_monitor(MONITOR_DEF* monitor, UINT32 width, UINT32 height)
++{
++    monitor->right = monitor->left + (INT32)width - 1;
++    monitor->bottom = monitor->top + (INT32)height - 1;
++}
++
+ static UINT32 mac_shadow_list_displays(MONITOR_DEF* monitors, CGDirectDisplayID* ids,
+                                        CGRect* bounds, UINT32 maxMonitors)
+ {
+@@ -220,7 +266,14 @@ static UINT32 mac_shadow_list_displays(MONITOR_DEF* monitors, CGDirectDisplayID*
+ 
+ static UINT32 mac_shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors)
+ {
+-	return mac_shadow_list_displays(monitors, nullptr, nullptr, maxMonitors);
++	const UINT32 count = mac_shadow_list_displays(monitors, nullptr, nullptr, maxMonitors);
++	if (count == 1)
++	{
++		UINT32 width = 0, height = 0;
++		mac_shadow_output_dimensions(CGDisplayBounds(CGMainDisplayID()), &width, &height, count);
++		mac_shadow_override_monitor(&monitors[0], width, height);
++	}
++	return count;
+ }
+ 
+ /* Called by the MacRemote executable after shadow_server_init.
+@@ -368,11 +421,26 @@ static BOOL mac_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
+ 
+ static CGPoint mac_shadow_point(const macShadowSubsystem* mac, UINT16 x, UINT16 y)
+ {
+-	const CGFloat scaleX = mac->bounds.size.width / (CGFloat)mac->width;
+-	const CGFloat scaleY = mac->bounds.size.height / (CGFloat)mac->height;
++	const mrSurfaceViewport viewport = mr_surface_fit(mac->bounds.size.width,
++	    mac->bounds.size.height, mac->width, mac->height);
++	return CGPointMake(mac->bounds.origin.x +
++	    mr_surface_to_logical(x, viewport.left, viewport.width, mac->bounds.size.width),
++	    mac->bounds.origin.y +
++	    mr_surface_to_logical(y, viewport.top, viewport.height, mac->bounds.size.height));
++}
+ 
+-	return CGPointMake(mac->bounds.origin.x + (CGFloat)x * scaleX,
+-	                   mac->bounds.origin.y + (CGFloat)y * scaleY);
++/* Block input using old logical bounds while the display mode transitions. */
++BOOL mac_shadow_stream_geometry_ready(const rdpShadowSubsystem* subsystem)
++{
++    if (!subsystem || subsystem->selectedMonitor >= subsystem->numMonitors)
++        return FALSE;
++    const macShadowSubsystem* mac = (const macShadowSubsystem*)subsystem;
++    CGRect current = CGDisplayBounds(mac->display);
++    (void)mr_capture_override_bounds(mac->display, &current);
++    const MONITOR_DEF* monitor = &subsystem->monitors[subsystem->selectedMonitor];
++    return CGRectEqualToRect(current, mac->bounds) && mac->width > 0 && mac->height > 0 &&
++           (UINT32)(monitor->right - monitor->left + 1) == mac->width &&
++           (UINT32)(monitor->bottom - monitor->top + 1) == mac->height;
+ }
+ 
+ static BOOL mac_shadow_mouse_event(macShadowSubsystem* mac, CGEventType type, CGPoint point,
+@@ -1003,11 +1071,14 @@ static void mac_shadow_cursor_send_position(macShadowSubsystem* mac, UINT64 now)
+ 	const CGPoint where = CGEventGetLocation(event);
+ 	CFRelease(event);
+ 
+-	/* from global points to the surface, as mac_shadow_point the other way */
+-	const CGFloat x =
+-	    (where.x - mac->bounds.origin.x) * (CGFloat)mac->width / mac->bounds.size.width;
+-	const CGFloat y =
+-	    (where.y - mac->bounds.origin.y) * (CGFloat)mac->height / mac->bounds.size.height;
++	/* Use the exact ScreenCaptureKit destination viewport in reverse.
++	 * Preserved aspect ratio can add letterbox/pillarbox offsets. */
++	const mrSurfaceViewport viewport = mr_surface_fit(mac->bounds.size.width,
++	    mac->bounds.size.height, mac->width, mac->height);
++	const CGFloat x = mr_logical_to_surface(where.x - mac->bounds.origin.x,
++	    viewport.left, viewport.width, mac->bounds.size.width, mac->width);
++	const CGFloat y = mr_logical_to_surface(where.y - mac->bounds.origin.y,
++	    viewport.top, viewport.height, mac->bounds.size.height, mac->height);
+ 	const UINT32 xPos = (UINT32)MIN(MAX(x, 0.0), (CGFloat)mac->width - 1.0);
+ 	const UINT32 yPos = (UINT32)MIN(MAX(y, 0.0), (CGFloat)mac->height - 1.0);
+ 	if ((xPos == mac->common.pointerX) && (yPos == mac->common.pointerY))
+@@ -1141,6 +1212,8 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
+ 	const UINT32 count = mac_shadow_list_displays(monitors, ids, bounds, MAC_SHADOW_MAX_DISPLAYS);
+ 	if (count == 0)
+ 		return;
++	for (UINT32 i = 0; i < count; ++i)
++		(void)mr_capture_override_bounds(ids[i], &bounds[i]);
+ 
+ 	UINT32 selected = 0;
+ 	for (UINT32 x = 0; x < count; x++)
+@@ -1148,9 +1221,13 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
+ 		if (ids[x] == mac->display)
+ 			selected = x; /* the same display if it is still there */
+ 	}
+-	const MONITOR_DEF* monitor = &monitors[selected];
+-	const UINT32 width = WINPR_ASSERTING_INT_CAST(UINT32, monitor->right - monitor->left + 1);
+-	const UINT32 height = WINPR_ASSERTING_INT_CAST(UINT32, monitor->bottom - monitor->top + 1);
++	MONITOR_DEF* monitor = &monitors[selected];
++	UINT32 width = 0, height = 0;
++	mac_shadow_output_dimensions(bounds[selected], &width, &height, count);
++	if (count == 1)
++		mac_shadow_override_monitor(monitor, width, height);
++	const BOOL desktopChanged = (width != mac->width) || (height != mac->height) ||
++	                            (count != subsystem->numMonitors);
+ 
+ 	WLog_INFO(TAG,
+ 	          "the displays changed: sharing display %" PRIu32 " (%" PRIu32 " of %" PRIu32
+@@ -1182,7 +1259,7 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
+ 	LeaveCriticalSection(&mac->frameLock);
+ 	mac->sizeWarned = FALSE;
+ 
+-	if (!shadow_screen_resize(subsystem->server->screen))
++	if (desktopChanged && !shadow_screen_resize(subsystem->server->screen))
+ 		WLog_ERR(TAG, "the surface could not take the new size");
+ 
+ 	/* tried again every second if this fails */
+@@ -1199,9 +1276,14 @@ static void mac_shadow_check_displays(macShadowSubsystem* mac, UINT64 now, BOOL*
+ 	mac->displaysChecked = now;
+ 
+ 	uint32_t count = 0;
+-	const CGRect bounds = CGDisplayBounds(mac->display);
+-	if ((CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess) ||
+-	    ((count == mac->common.numMonitors) && CGRectEqualToRect(bounds, mac->bounds)))
++	CGRect bounds = CGDisplayBounds(mac->display);
++	(void)mr_capture_override_bounds(mac->display, &bounds);
++	if (CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess)
++		return;
++	UINT32 wantedWidth = 0, wantedHeight = 0;
++	mac_shadow_output_dimensions(bounds, &wantedWidth, &wantedHeight, count);
++	if ((count == mac->common.numMonitors) && CGRectEqualToRect(bounds, mac->bounds) &&
++	    mac->width == wantedWidth && mac->height == wantedHeight)
+ 		return;
+ 
+ 	mac_shadow_displays_changed(mac, lost);
+@@ -1311,13 +1393,12 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
+ 	if (subsystem->selectedMonitor >= count)
+ 		subsystem->selectedMonitor = 0;
+ 
+-	const MONITOR_DEF* monitor = &subsystem->monitors[subsystem->selectedMonitor];
++	MONITOR_DEF* monitor = &subsystem->monitors[subsystem->selectedMonitor];
+ 	mac->display = ids[subsystem->selectedMonitor];
+ 	mac->bounds = bounds[subsystem->selectedMonitor];
+-	/* the surface has the size of the display in points: on a Retina display
+-	 * ScreenCaptureKit scales the picture down to it */
+-	mac->width = (UINT32)(monitor->right - monitor->left + 1);
+-	mac->height = (UINT32)(monitor->bottom - monitor->top + 1);
++	mac_shadow_output_dimensions(mac->bounds, &mac->width, &mac->height, count);
++	if (count == 1)
++		mac_shadow_override_monitor(monitor, mac->width, mac->height);
+ 
+ 	mac_shadow_set_virtual_screen(subsystem, count);
+ 
+diff --git a/server/shadow/Mac/macremote_capture_logical.h b/server/shadow/Mac/macremote_capture_logical.h
+new file mode 100644
+index 0000000..07fa3b3
+--- /dev/null
++++ b/server/shadow/Mac/macremote_capture_logical.h
+@@ -0,0 +0,39 @@
++#ifndef MACREMOTE_CAPTURE_LOGICAL_H
++#define MACREMOTE_CAPTURE_LOGICAL_H
++
++#include <CoreGraphics/CoreGraphics.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++/* GUI + native connect publish the actual macOS logical mode, atomically.
++ * Quartz may hold stale per-process display bounds inside a headless Shadow
++ * process; this small one-way file is authoritative for video and input.
++ * If absent or invalid, preserve upstream Quartz bounds. */
++static inline bool mr_capture_override_bounds(CGDirectDisplayID display, CGRect* bounds)
++{
++    if (!bounds)
++        return false;
++    const char* home = getenv("HOME");
++    if (!home || !*home)
++        return false;
++    char path[PATH_MAX];
++    const int n = snprintf(path, sizeof(path),
++        "%s/Library/Application Support/MacRemote/capture-logical.conf", home);
++    if (n < 0 || (size_t)n >= sizeof(path))
++        return false;
++    FILE* file = fopen(path, "r");
++    if (!file)
++        return false;
++    unsigned id = 0, width = 0, height = 0;
++    const int count = fscanf(file, "%u %u %u", &id, &width, &height);
++    fclose(file);
++    if (count != 3 || id != display || width < 640 || width > 8192 ||
++        height < 400 || height > 4320)
++        return false;
++    bounds->size.width = width;
++    bounds->size.height = height;
++    return true;
++}
++#endif
+diff --git a/server/shadow/Mac/macremote_surface_geometry.h b/server/shadow/Mac/macremote_surface_geometry.h
+new file mode 100644
+index 0000000..948c9b5
+--- /dev/null
++++ b/server/shadow/Mac/macremote_surface_geometry.h
+@@ -0,0 +0,66 @@
++#ifndef MACREMOTE_SURFACE_GEOMETRY_H
++#define MACREMOTE_SURFACE_GEOMETRY_H
++
++/* A ScreenCaptureKit display stream can preserve aspect ratio, making the
++ * captured image smaller than the RDP surface on one axis. The exact same
++ * destination rectangle must be used for video, input and cursor feedback. */
++#include <math.h>
++#include <stdbool.h>
++
++typedef struct
++{
++    double left;
++    double top;
++    double width;
++    double height;
++} mrSurfaceViewport;
++
++static inline mrSurfaceViewport mr_surface_fit(double sourceW, double sourceH,
++                                               double streamW, double streamH)
++{
++    mrSurfaceViewport result = { 0, 0, 0, 0 };
++    if (!(sourceW > 0) || !(sourceH > 0) || !(streamW > 0) || !(streamH > 0))
++        return result;
++    const double scale = fmin(streamW / sourceW, streamH / sourceH);
++    result.width = floor(sourceW * scale + 0.5);
++    result.height = floor(sourceH * scale + 0.5);
++    result.left = floor((streamW - result.width) * 0.5);
++    result.top = floor((streamH - result.height) * 0.5);
++    return result;
++}
++
++/* With a scaled/letterboxed capture, refresh the full local pixel buffer:
++ * partial capture dirty rectangles may not map to destination coordinates.
++ * H.264 still encodes only actual pixel differences over time. */
++static inline bool mr_surface_scaled_capture(double sourceW, double sourceH,
++                                             double streamW, double streamH,
++                                             mrSurfaceViewport viewport)
++{
++    return fabs(sourceW - streamW) > 0.5 || fabs(sourceH - streamH) > 0.5 ||
++           viewport.left != 0 || viewport.top != 0 ||
++           fabs(viewport.width - streamW) > 0.5 ||
++           fabs(viewport.height - streamH) > 0.5;
++}
++
++/* Input coordinates, in RDP pixels, to the source display's logical points. */
++static inline double mr_surface_to_logical(double coord, double offset,
++                                           double length, double logicalLength)
++{
++    if (!(length > 0) || !(logicalLength > 0))
++        return 0;
++    const double value = (coord - offset) * logicalLength / length;
++    return fmin(fmax(value, 0), logicalLength - 1);
++}
++
++/* Display logical points to RDP video/cursor pixels, including letterbox. */
++static inline double mr_logical_to_surface(double coord, double offset,
++                                           double length, double logicalLength,
++                                           double surfaceLength)
++{
++    if (!(length > 0) || !(logicalLength > 0) || !(surfaceLength > 0))
++        return 0;
++    const double value = offset + coord * length / logicalLength;
++    return fmin(fmax(value, 0), surfaceLength - 1);
++}
++
++#endif /* MACREMOTE_SURFACE_GEOMETRY_H */

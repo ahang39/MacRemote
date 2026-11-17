@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Checks for high-confidence private content in publishable Git-tracked files.'''
+'''Checks publishable working-tree files for obvious private content.'''
 
 from __future__ import annotations
 
@@ -29,18 +29,26 @@ COMPILED = [(label, re.compile(pattern, re.IGNORECASE)) for label, pattern in PA
 
 
 def main() -> int:
-    raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
+    raw = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+    )
     paths = [Path(part.decode()) for part in raw.split(b"\x00") if part]
     errors: list[str] = []
+    scanned = 0
     for rel in paths:
         # This scanner intentionally contains patterns as data.
         if rel == Path("tools/check-public-source.py"):
             continue
+        target = ROOT / rel
+        if not target.is_file():
+            continue
+        scanned += 1
         name = rel.name.lower()
         if name in FORBIDDEN_NAMES or name.endswith(FORBIDDEN_SUFFIXES):
             errors.append(f"{rel}: forbidden private file type")
             continue
-        data = (ROOT / rel).read_bytes()
+        data = target.read_bytes()
         if b"\x00" in data[:4096]:
             continue
         for label, pattern in COMPILED:
@@ -50,7 +58,7 @@ def main() -> int:
         for error in errors:
             print("ERROR:", error)
         return 1
-    print(f"Public source check: passed ({len(paths)} tracked files).")
+    print(f"Public source check: passed ({scanned} working-tree files).")
     return 0
 
 
