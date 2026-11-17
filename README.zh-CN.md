@@ -1,64 +1,99 @@
-# MacRemote
+<p align="center">
+  <img src="docs/assets/macremote-icon.png" alt="MacRemote" width="96">
+</p>
 
-**用 Windows 自带远程桌面控制 Mac，保留熟悉的快捷键、剪贴板与操作习惯。**
+<h1 align="center">MacRemote</h1>
+<p align="center"><strong>Windows 自带远程桌面，直接连接你的 Mac。</strong></p>
+<p align="center">
+  打开 `mstsc`，就能操作 Mac 当前的桌面。<br>
+  不用安装专门的 Windows 客户端，不用注册新账号，也不需要云端中转。
+</p>
 
-MacRemote 为 macOS 提供原生 RDP 服务端。直接在 Windows 打开 **远程桌面连接（`mstsc`）**，即可连接 Mac 当前登录的桌面。无需安装专用 Windows 客户端、打开浏览器或依赖云中继。
+<p align="center">
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.0--alpha-D48752" alt="v0.2.0 预览版"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon 和 Intel">
+  <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="源码检查"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><strong>下载 MacRemote</strong></a>
+  &nbsp;·&nbsp; <a href="#下载安装">下载安装</a>
+  &nbsp;·&nbsp; <a href="#主要功能">主要功能</a>
+  &nbsp;·&nbsp; <a href="README.md">English</a>
+</p>
 
-[English](README.md) · [构建与运行](#构建与运行) · [技术架构](docs/ARCHITECTURE.md) · [参与贡献](CONTRIBUTING.md)
-
-[![CI](https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg)](https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml)
-![macOS](https://img.shields.io/badge/macOS-14%2B-222222?logo=apple)
-![CPU](https://img.shields.io/badge/CPU-Apple%20Silicon%20%7C%20Intel-222222)
-
-## 下载安装
-
-**[MacRemote v0.1.0 首个 Ad-hoc 预览版](https://github.com/ahang39/MacRemote/releases/tag/v0.1.0-adhoc.1)** — 支持 macOS 14+。
-
-| Mac 类型 | 下载 |
-| --- | --- |
-| Apple Silicon（M1/M2/M3/M4 等） | [ARM64 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.1.0-adhoc.1/MacRemote-v0.1.0-macos-arm64.dmg) |
-| Intel（x86_64） | [Intel DMG](https://github.com/ahang39/MacRemote/releases/download/v0.1.0-adhoc.1/MacRemote-v0.1.0-macos-x86_64.dmg) |
-
-下载后将 App 拖入「应用程序」。由于 Ad-hoc 签名未经过苹果公证，首次启动若被阻止，可在「系统设置 → 隐私与安全性 → 仍要打开」中允许。启动 RDP 前请授予屏幕录制权限。
+<p align="center">
+  <a href="docs/assets/macremote-settings.png"><img src="docs/assets/macremote-settings.png" width="420" alt="MacRemote 真实菜单栏界面：RDP 分辨率、HiDPI 缩放、视频码率与远程音量"></a>
+</p>
+<p align="center"><sub>真实 macOS 菜单栏界面 · 本机账户信息已模糊处理</sub></p>
 
 ## 为什么选择 MacRemote？
 
-### Windows 原生远程桌面体验
+Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接：**让 Mac 当前已登录的桌面支持标准 RDP 连接**，保留你的键盘习惯、剪贴板以及显示设置。
 
-直接使用 Windows 自带的 `mstsc`，输入 Mac 地址即可按熟悉的 RDP 方式远程操作。MacRemote 基于 FreeRDP Shadow 与 ScreenCaptureKit，连接的是 **Mac 当前已登录的真实桌面**，支持键鼠控制、自定义端口和原生 SwiftUI 菜单栏管理。
+- **Windows 零额外客户端。** 打开 `mstsc`，输入 Mac 地址，使用已有 Mac 账户密码登录。
+- **保留日常操作习惯。** 原生键鼠、双向文本与图片剪贴板，以及内置 Karabiner-Elements 基础映射规则兼容。
+- **让 Retina 显示更舒服。** RDP 传输分辨率和 Mac 桌面 HiDPI 缩放分开设置，不必为了放大界面同步提高传输像素数。
+- **不同设备有自己的设置。** 记住每个客户端的显示偏好、视频目标码率和远程音量；H.264/AVC420 可动态选择 1.4 / 2.0 / 4.0 Mbps，音频使用立体声 Opus。
+- **原生 Mac 体验。** 小巧的 SwiftUI 菜单栏界面，安装包自带运行依赖，目标机器不需要安装 Homebrew。
 
-### 远程操作也兼容 Karabiner 快捷键
+## 下载安装
 
-常规远程注入的按键容易绕过 macOS 键盘映射。MacRemote **自动读取现有 Karabiner-Elements 配置**，在 RDP 输入链路内直接兼容支持的 **basic manipulator** 规则：
+**最新预览版：[v0.2.0-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1)** · 要求 macOS 14 或更新版本。
 
-- 键位重映射、组合修饰键、按前台应用生效的规则、鼠标按键映射
-- 支持的窗口快捷操作在 MacRemote 内直接执行
-- 配置变化自动重新加载，无需额外常驻键盘映射服务
-- 未安装或未配置 Karabiner 时，直接使用原生 Quartz 输入
+| Mac 机型 | 下载 |
+| --- | --- |
+| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-arm64.dmg)** |
+| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-x86_64.dmg)** |
 
-兼容的是 Karabiner 基础规则子集，不涵盖全部复杂规则语义。[查看实现原理](docs/adr/0008-inprocess-karabiner-compat.md)。
+1. 打开 DMG，将 **MacRemote.app** 拖进「应用程序」，按提示授予「屏幕与系统音频录制」权限。
+2. 从菜单栏启动 RDP 服务，默认监听 **TCP 3389**。
+3. 在 Windows 打开 `mstsc`，连接 `Mac的IP:3389`，用已有 Mac 用户名和密码登录。
 
-### 兼容 Windows 的剪贴板与换行习惯
+当前 DMG 使用 **Ad-hoc 签名，尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
-通过标准 RDP 剪贴板通道在 Windows 与 Mac 之间双向复制**文本和图片**，处理 PNG/DIB 格式和复制回环。文字换行在 **Windows 和 Mac 两端统一为 CRLF（`\r\n`）**，减少跨平台编辑、粘贴和输入法的换行差异。
+> [!NOTE]
+> v0.2.0 安装包来自尚未全部推送的本地新代码。GitHub 根据 Release 标签自动生成的 Source code 压缩包仍是旧源码，**下载新版应使用上面的 DMG**。详情见 [Release Notes](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1)。
 
-## 功能一览
+## 主要功能
 
 | 能力 | 实现 |
 | --- | --- |
-| **标准 RDP** | Windows `mstsc` 与其他 RDP 客户端；FreeRDP 3.33.1 Shadow |
-| **Mac 账号登录** | TLS + macOS PAM，使用已有 Mac 账户 |
-| **真实桌面** | ScreenCaptureKit 捕获已登录的显示器 |
-| **键鼠控制** | Quartz 原生输入 + 内置 Karabiner 基础规则兼容 |
-| **双向剪贴板** | 文本、图片、PNG/DIB、Windows CRLF 换行 |
-| **原生管理界面** | SwiftUI 菜单栏、服务启停、权限引导、端口持久化 |
-| **独立 App** | 打包所需运行时依赖，目标 Mac 运行时不依赖 Homebrew |
+| **标准 RDP** | Windows `mstsc`、FreeRDP 3.33.1 Shadow、TLS + macOS PAM 账号登录 |
+| **Retina / HiDPI** | RDP 输出与 Mac UI 缩放独立；100%～200% 共 8 档；优先复用已有 HiDPI 分辨率 |
+| **客户端独立偏好** | 记住输出分辨率、标称缩放、实际 HiDPI 模式、视频目标码率及音频设置 |
+| **H.264 视频** | VideoToolbox 加速 AVC420，可实时调整目标码率，处理显示比例及鼠标坐标映射 |
+| **远程音频** | 客户端支持时通过 `rdpsnd` 传输 48 kHz 立体声 Opus，独立音量与严格静音 |
+| **键鼠控制** | 原生 Quartz 输入，内置 Karabiner basic manipulator 兼容层 |
+| **双向剪贴板** | Unicode 文本、PNG/DIB 图片与 Windows 换行符处理 |
+| **原生管理** | SwiftUI 菜单栏、权限检查、端口配置、服务启停及故障恢复 |
 
-Windows `mstsc` 已通过 **Classic 图形模式**连接验证；H.264/AVC444 图形协商持续优化中，详见[技术记录](docs/m2/AVC444.md)。
+### Retina 缩放，不再被传输分辨率绑住
 
-## 构建与运行
+比如 RDP 输出选择 **1920 × 1080**，Mac 界面可以单独选择 **100%、105%、110%、120%、135%、150%、175%、200%**。能复用现有 HiDPI 模式就直接复用；缺少的分辨率按需创建，重启 macOS 加载后再应用。
 
-**环境要求：** macOS 14+ 的 64 位 Mac、Xcode Command Line Tools，以及 Homebrew 构建依赖 CMake、Ninja、pkg-config、Opus、OpenSSL 4、json-c。构建脚本会按需拉取固定版本 FreeRDP 3.33.1。
+<p align="center">
+  <a href="docs/assets/macremote-hidpi-scales.png"><img src="docs/assets/macremote-hidpi-scales.png" width="420" alt="MacRemote 八档 HiDPI 缩放下拉菜单实拍"></a>
+</p>
+<p align="center"><sub>八档非线性缩放，菜单中直接显示实际对应的 HiDPI 分辨率</sub></p>
+
+### 弱网优化有实测数据
+
+一次真实 Windows `mstsc` 对照实验，在**下行 2 Mbps、额外 80 ms RTT** 的条件下，将 AVC420 编码目标由 **4.0 降至 1.4 Mbps**，五秒合成滚动场景的下行流量中位数**减少 44%**，第一次滚动画面反馈从 **3.30 秒降至 0.99 秒**。数据来自受控测试场景，环境和逐轮数据见[完整测试记录](docs/qa/2026-11-17-mstsc-wan.md)。
+
+## 技术架构
+
+`Windows mstsc → TLS/RDP → FreeRDP Shadow → ScreenCaptureKit / VideoToolbox → 当前登录的 macOS 桌面`
+
+服务端使用 C/Objective-C，界面使用 AppKit/SwiftUI；没有自定义远控协议，不需要云账号或额外常驻中转服务。第三方依赖固定版本并打包进 App。
+
+**当前范围：**连接 Mac 已登录的桌面，不包括开机前的 FileVault 解锁界面和 macOS 登录界面。认证使用 TLS + PAM，暂不支持 NLA；AVC444 仍属实验性模式。不同客户端的音频协商、输入法和重连边界持续实测优化。
+
+更多细节：[技术架构](docs/ARCHITECTURE.md) · [设计决策](docs/adr/) · [测试矩阵](docs/TESTING.md) · [发布清单](docs/RELEASE_CHECKLIST.md)。
+
+## 从源码构建
+
+需要 macOS 14+、Xcode Command Line Tools、CMake、Ninja、pkg-config、Perl 和 Python 3：
 
 ```bash
 git clone https://github.com/ahang39/MacRemote.git
@@ -66,46 +101,10 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-构建完成后，在 `~/Library/Caches/MacRemote/product/` 下得到 `MacRemote-*.app`。打开应用、授予 macOS「屏幕与系统音频录制」权限，然后在菜单栏启动 RDP 服务。
+构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。当前公开源码可能落后于预览版安装包，以上面发布说明为准。
 
-Windows 端运行 `mstsc`，连接 Mac IP 地址（默认 TCP **3389**），使用已有 Mac 账户登录。端口可修改，并在后续启动时保持设置。
+## 项目与贡献
 
-构建选项、签名与测试方法参见[构建指南](docs/m2/README.md)。
+MacRemote 仍处于 **Alpha 预览阶段**，以真实 Windows `mstsc` 兼容性和可复现实测为开发依据。欢迎提交问题及改进：[参与贡献](CONTRIBUTING.md) · [安全政策](SECURITY.md) · [Issues](https://github.com/ahang39/MacRemote/issues)。
 
-**网络安全：** 建议通过可信局域网或 VPN 使用，输入 Mac 密码前检查 RDP 证书。当前认证为 TLS + PAM（不使用 NLA），不要将监听端口直接暴露到公网。[安全说明](SECURITY.md)。
-
-## 技术架构
-
-```text
-Windows mstsc / 标准 RDP 客户端
-                 |
-         FreeRDP Shadow
-          /     |     \
- ScreenCaptureKit  输入  CLIPRDR
-                      |
-              Karabiner 基础规则
-                原生兼容处理
-                      |
-                  macOS 桌面
-```
-
-服务端使用 C/Objective-C，管理界面基于 AppKit/SwiftUI；在固定版本 FreeRDP 上实现 macOS 系统集成，不依赖自定义远程桌面协议或额外的远控客户端。
-
-项目提供[架构文档](docs/ARCHITECTURE.md)、[技术决策](docs/adr/)、[测试说明](docs/TESTING.md)与[性能实验](benchmarks/)。本地构建包含 11 项 CTest 和 Swift 端口偏好设置测试。
-
-## 开发计划
-
-- [ ] 完成 Windows `mstsc` 对 Karabiner、剪贴板、输入法、断线重连、睡眠唤醒的全面回归
-- [ ] 完善证书信任与桌面会话恢复
-- [ ] 优化 H.264/AVC444 图形通道并发布可复现性能数据
-- [ ] 完成第三方依赖许可审查后提供正式签名、公证安装包
-
-详细进展见[发布验收清单](docs/RELEASE_CHECKLIST.md)。
-
-## 参与贡献
-
-欢迎提交 Issue、可复现的兼容性报告和 Pull Request。参见[贡献指南](CONTRIBUTING.md)与[安全政策](SECURITY.md)。
-
-## 使用许可
-
-项目使用条款见 [LICENSE](LICENSE)，第三方组件许可证见[第三方声明](THIRD_PARTY_NOTICES.md)。
+**许可证：**MacRemote 使用 [PolyForm Noncommercial 1.0.0](LICENSE)，第三方组件保留各自[许可证与声明](THIRD_PARTY_NOTICES.md)。
