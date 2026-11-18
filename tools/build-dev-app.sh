@@ -39,6 +39,7 @@ patches=(
   freerdp-3.33.1-mac-cursor-feedback.patch
   freerdp-3.33.1-shadow-cert-log.patch
   freerdp-3.33.1-shadow-output-geometry.patch
+  freerdp-3.33.1-idle-capture-on-demand.patch
 )
 patch_fingerprint="$(
   for name in "$patches[@]"; do

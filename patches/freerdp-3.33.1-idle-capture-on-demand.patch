@@ -1,0 +1,205 @@
+diff --git a/server/shadow/Mac/mac_shadow.c b/server/shadow/Mac/mac_shadow.c
+index 8c1db2d..088973c 100644
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -69,6 +69,8 @@
+ /* how often the sound statistics are logged (debug level) */
+ #define MAC_SHADOW_AUDIO_LOG_MS 5000
+ 
++static BOOL mac_shadow_has_clients(macShadowSubsystem* mac);
++
+ /* Two clicks closer than this, in time and in points, make a double click */
+ #define MAC_SHADOW_CLICK_MS 500
+ #define MAC_SHADOW_CLICK_DISTANCE 4.0
+@@ -699,6 +701,8 @@ static void mac_shadow_on_frame(void* context, CVPixelBufferRef frame, const CGR
+ {
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+ 	WINPR_ASSERT(mac);
++	if (!mac_shadow_has_clients(mac))
++		return;
+ 
+ 	const CGRect frameRect = CGRectMake(0, 0, (CGFloat)CVPixelBufferGetWidth(frame),
+ 	                                    (CGFloat)CVPixelBufferGetHeight(frame));
+@@ -794,6 +798,8 @@ static void mac_shadow_on_audio(void* context, const float* samples, size_t fram
+ {
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+ 	WINPR_ASSERT(mac);
++	if (!mac_shadow_has_clients(mac))
++		return;
+ 
+ 	if ((channels != MAC_AUDIO_CHANNELS) || (rate != MAC_AUDIO_RATE))
+ 	{
+@@ -1232,7 +1238,8 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
+ 		WLog_ERR(TAG, "the surface could not take the new size");
+ 
+ 	/* tried again every second if this fails */
+-	*lost = !mac_shadow_capture_restart(mac);
++	/* A display change while idle must not restart ScreenCaptureKit. */
++	*lost = mac_shadow_has_clients(mac) ? !mac_shadow_capture_restart(mac) : FALSE;
+ }
+ 
+ static void mac_shadow_check_displays(macShadowSubsystem* mac, UINT64 now, BOOL* lost)
+@@ -1263,8 +1270,9 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)arg;
+ 	wMessagePipe* MsgPipe = mac->common.MsgPipe;
+ 	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent,
+-		                mac->lostEvent };
++		                mac->lostEvent, mac->clientEvent };
+ 	BOOL lost = FALSE;
++	BOOL captureRequested = FALSE;
+ 	UINT64 restart = 0;
+ 
+ 	while (1)
+@@ -1280,17 +1288,56 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
+ 			break;
+ 
++		/* Only this thread starts/stops SCStream; peer callbacks just signal. */
++		if (WaitForSingleObject(mac->clientEvent, 0) == WAIT_OBJECT_0)
++			(void)ResetEvent(mac->clientEvent);
++		const BOOL connected = mac_shadow_has_clients(mac);
+ 		const UINT64 now = GetTickCount64();
++		if (captureRequested != connected)
++		{
++			captureRequested = connected;
++			if (connected)
++			{
++				const BOOL started = mac_shadow_capture_restart(mac);
++				lost = !started;
++				if (started)
++				{
++					WLog_INFO(TAG, "screen and audio capture started (client connected)");
++				}
++				else
++				{
++					restart = now + MAC_SHADOW_RESTART_MS;
++					WLog_WARN(TAG, "capture not yet available; retrying with client connected");
++				}
++			}
++			else
++			{
++				mac_capture_free(mac->capture);
++				mac->capture = nullptr;
++				EnterCriticalSection(&mac->frameLock);
++				if (mac->frame)
++					CVPixelBufferRelease(mac->frame);
++				mac->frame = nullptr;
++				region16_clear(&mac->pending);
++				LeaveCriticalSection(&mac->frameLock);
++				(void)ResetEvent(mac->frameEvent);
++				if (mac->audioStream)
++					Stream_SetPosition(mac->audioStream, 0); /* no stale partial PCM on reconnect */
++				lost = FALSE;
++				(void)ResetEvent(mac->lostEvent);
++				WLog_INFO(TAG, "screen and audio capture stopped (no clients)");
++			}
++		}
+ 		if (WaitForSingleObject(mac->lostEvent, 0) == WAIT_OBJECT_0)
+ 		{
+ 			(void)ResetEvent(mac->lostEvent);
+-			if (!lost)
++			if (connected && !lost)
+ 				WLog_WARN(TAG, "the screen is no longer captured (the display is off?): the "
+ 				               "clients see the last picture until it is back");
+-			lost = TRUE;
++			lost = connected;
+ 			restart = now + MAC_SHADOW_RESTART_MS;
+ 		}
+-		else if (lost && (now >= restart))
++		else if (connected && lost && (now >= restart))
+ 		{
+ 			restart = now + MAC_SHADOW_RESTART_MS;
+ 			if (mac_shadow_capture_restart(mac))
+@@ -1301,7 +1348,7 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		}
+ 
+ 		mac_shadow_check_displays(mac, now, &lost);
+-		if (clients)
++		if (connected)
+ 			mac_shadow_cursor_update(mac, now);
+ 
+ 		wMessage message = WINPR_C_ARRAY_INIT;
+@@ -1315,7 +1362,8 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		if (WaitForSingleObject(mac->frameEvent, 0) == WAIT_OBJECT_0)
+ 		{
+ 			(void)ResetEvent(mac->frameEvent);
+-			mac_shadow_send_frame(mac);
++			if (connected)
++				mac_shadow_send_frame(mac);
+ 		}
+ 	}
+ 
+@@ -1408,10 +1456,8 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
+ 		                              .context = mac };
+ 	mac->config = config;
+ 
+-	mac->capture = mac_capture_new(&mac->config);
+-	if (!mac->capture)
+-		return -1;
+-
++	/* Defer SCStream allocation until an authenticated client connects. */
++	mac->capture = nullptr;
+ 	return 1;
+ }
+ 
+@@ -1467,6 +1513,7 @@ static BOOL mac_shadow_client_connect(rdpShadowSubsystem* subsystem,
+ 	EnterCriticalSection(&mac->clientLock);
+ 	if (mac->clients++ == 0)
+ 	{
++		(void)SetEvent(mac->clientEvent);
+ 		IOPMAssertionID activity = kIOPMNullAssertionID;
+ 		if (IOPMAssertionDeclareUserActivity(CFSTR("FreeRDP shadow server: a client connected"),
+ 		                                     kIOPMUserActiveRemote, &activity) == kIOReturnSuccess)
+@@ -1495,6 +1542,7 @@ static void mac_shadow_client_disconnect(rdpShadowSubsystem* subsystem,
+ 	EnterCriticalSection(&mac->clientLock);
+ 	if ((mac->clients > 0) && (--mac->clients == 0))
+ 	{
++		(void)SetEvent(mac->clientEvent);
+ 		/* Every remote session has ended. Do not leak a held modifier into
+ 		 * a later mstsc connection, including with no Karabiner installed. */
+ 		mac->modifiers = 0;
+@@ -1525,12 +1573,7 @@ static int mac_shadow_subsystem_start(rdpShadowSubsystem* subsystem)
+ 		return -1;
+ 	}
+ 
+-	if (!mac_capture_start(mac->capture))
+-	{
+-		(void)mac_shadow_subsystem_stop(subsystem);
+-		return -1;
+-	}
+-
++	/* Capture starts on the first authenticated client, not on server startup. */
+ 	return 1;
+ }
+ 
+@@ -1551,6 +1594,8 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
+ 		(void)CloseHandle(mac->frameEvent);
+ 	if (mac->stopEvent)
+ 		(void)CloseHandle(mac->stopEvent);
++	if (mac->clientEvent)
++		(void)CloseHandle(mac->clientEvent);
+ 	if (mac->lostEvent)
+ 		(void)CloseHandle(mac->lostEvent);
+ 	free(mac);
+@@ -1581,7 +1626,8 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
+ 	mac->frameEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+ 	mac->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+ 	mac->lostEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+-	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent)
++	mac->clientEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
++	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent || !mac->clientEvent)
+ 	{
+ 		mac_shadow_subsystem_free(&mac->common);
+ 		return nullptr;
+diff --git a/server/shadow/Mac/mac_shadow.h b/server/shadow/Mac/mac_shadow.h
+index 97f4b5d..7b1947b 100644
+--- a/server/shadow/Mac/mac_shadow.h
++++ b/server/shadow/Mac/mac_shadow.h
+@@ -61,6 +61,7 @@ struct mac_shadow_subsystem
+ 	UINT64 displaysChecked;
+ 	HANDLE thread;
+ 	HANDLE stopEvent;
++	HANDLE clientEvent; /* first/last authenticated client */
+ 
+ 	/* the newest frame and what changed since it was last sent, under frameLock */
+ 	CRITICAL_SECTION frameLock;

@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.0--alpha-D48752" alt="v0.2.0 alpha"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.1--alpha-D48752" alt="v0.2.1 alpha"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon and Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="Source checks"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><strong>Download for macOS</strong></a>
   &nbsp;·&nbsp; <a href="#get-started">Get started</a>
   &nbsp;·&nbsp; <a href="#features">Features</a>
   &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
@@ -35,16 +35,17 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 - **Keep your Mac workflow.** Native keyboard and mouse input, bidirectional text/image clipboard, and built-in compatibility for supported Karabiner-Elements basic rules.
 - **Make Retina readable.** Choose the RDP output resolution separately from the macOS HiDPI desktop. Adjust UI scale without forcing the remote video to use that same resolution.
 - **Tune video and audio per client.** VideoToolbox H.264/AVC420 with live 1.4 / 2.0 / 4.0 Mbps targets, stereo Opus remote audio, volume and mute preferences.
+- **Less work while disconnected.** Screen and system-audio capture start when a client connects and stop after the last disconnects.
 - **A real Mac app.** Compact SwiftUI menu bar controls; self-contained binaries with pinned runtime dependencies—no Homebrew required to run the downloaded app.
 
 ## Get started
 
-**Latest preview: [v0.2.0-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1)** · macOS 14 or newer.
+**Latest preview: [v0.2.1-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1)** · macOS 14 or newer.
 
 | Your Mac | Download |
 | --- | --- |
-| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-arm64.dmg)** |
-| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-x86_64.dmg)** |
+| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-arm64.dmg)** |
+| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-x86_64.dmg)** |
 
 1. Open the DMG and drag **MacRemote.app** into **Applications**. Grant **Screen & System Audio Recording** when prompted.
 2. Start the RDP server from the menu bar (default **TCP 3389**).
@@ -53,7 +54,7 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 These preview packages use **ad-hoc signing** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
 
 > [!NOTE]
-> **v0.2.0 source code is now public on [main](https://github.com/ahang39/MacRemote/tree/main).** The existing `v0.2.0-adhoc.1` release tag was created before the source was published, so GitHub's auto-generated source archives for that tag still point to an older snapshot. Use `main` for the code corresponding to the attached preview DMGs.
+> The [v0.2.1-adhoc.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
 
 ## Features
 
@@ -64,6 +65,7 @@ These preview packages use **ad-hoc signing** and are **not notarized**. If macO
 | **Per-device settings** | Remember a client's output resolution, nominal scale, selected HiDPI mode, video target and audio preferences |
 | **H.264 video** | VideoToolbox accelerated AVC420, live bitrate selection and display/cursor coordinate handling |
 | **Remote sound** | 48 kHz stereo Opus over `rdpsnd` when negotiated by the client; remote gain and strict mute |
+| **On-demand capture** | Suspend ScreenCaptureKit video/audio capture after the last client disconnects; restart for a new client |
 | **Keyboard & mouse** | Native Quartz input and an in-process Karabiner basic-rule compatibility layer |
 | **Clipboard** | Two-way Unicode text and image transfer with PNG/DIB handling and line-ending normalization |
 | **Native management** | SwiftUI status menu, permissions, configurable port, start/stop and recovery controls |
@@ -101,7 +103,7 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-The standalone app is generated under `.build/output/`. The build pins FreeRDP and builds private dependencies. See the [build guide](docs/m2/README.md). Build from `main` for the complete v0.2.0 preview source.
+The standalone app is generated under `.build/output/`. The build pins FreeRDP and builds private dependencies. See the [build guide](docs/m2/README.md). Build from `main` for the latest preview source.
 
 ## Project
 

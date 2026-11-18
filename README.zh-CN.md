@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.0--alpha-D48752" alt="v0.2.0 预览版"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.1--alpha-D48752" alt="v0.2.1 预览版"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon 和 Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="源码检查"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1"><strong>下载 MacRemote</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><strong>下载 MacRemote</strong></a>
   &nbsp;·&nbsp; <a href="#下载安装">下载安装</a>
   &nbsp;·&nbsp; <a href="#主要功能">主要功能</a>
   &nbsp;·&nbsp; <a href="README.md">English</a>
@@ -35,16 +35,17 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 - **保留日常操作习惯。** 原生键鼠、双向文本与图片剪贴板，以及内置 Karabiner-Elements 基础映射规则兼容。
 - **让 Retina 显示更舒服。** RDP 传输分辨率和 Mac 桌面 HiDPI 缩放分开设置，不必为了放大界面同步提高传输像素数。
 - **不同设备有自己的设置。** 记住每个客户端的显示偏好、视频目标码率和远程音量；H.264/AVC420 可动态选择 1.4 / 2.0 / 4.0 Mbps，音频使用立体声 Opus。
+- **断开后停止采集。** 首个 RDP 客户端连接后才启动屏幕和系统音频采集，最后一个客户端断开便停止，减少空闲资源占用。
 - **原生 Mac 体验。** 小巧的 SwiftUI 菜单栏界面，安装包自带运行依赖，目标机器不需要安装 Homebrew。
 
 ## 下载安装
 
-**最新预览版：[v0.2.0-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.0-adhoc.1)** · 要求 macOS 14 或更新版本。
+**最新预览版：[v0.2.1-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1)** · 要求 macOS 14 或更新版本。
 
 | Mac 机型 | 下载 |
 | --- | --- |
-| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-arm64.dmg)** |
-| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.0-adhoc.1/MacRemote-v0.2.0-macos-x86_64.dmg)** |
+| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-arm64.dmg)** |
+| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-x86_64.dmg)** |
 
 1. 打开 DMG，将 **MacRemote.app** 拖进「应用程序」，按提示授予「屏幕与系统音频录制」权限。
 2. 从菜单栏启动 RDP 服务，默认监听 **TCP 3389**。
@@ -53,7 +54,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 当前 DMG 使用 **Ad-hoc 签名，尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
 > [!NOTE]
-> **v0.2.0 的完整源码现已公开在 [main 分支](https://github.com/ahang39/MacRemote/tree/main)。** 现有 `v0.2.0-adhoc.1` Release 标签创建于源码公开之前，因此 GitHub 按该标签自动生成的 Source code 压缩包仍对应旧快照。请从 `main` 获取与本次预览 DMG 对应的代码。
+> [v0.2.1-adhoc.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
 
 ## 主要功能
 
@@ -64,6 +65,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 | **客户端独立偏好** | 记住输出分辨率、标称缩放、实际 HiDPI 模式、视频目标码率及音频设置 |
 | **H.264 视频** | VideoToolbox 加速 AVC420，可实时调整目标码率，处理显示比例及鼠标坐标映射 |
 | **远程音频** | 客户端支持时通过 `rdpsnd` 传输 48 kHz 立体声 Opus，独立音量与严格静音 |
+| **按需屏幕采集** | 最后一个客户端断开后停止 ScreenCaptureKit 视频与系统音频采集，重连时恢复 |
 | **键鼠控制** | 原生 Quartz 输入，内置 Karabiner basic manipulator 兼容层 |
 | **双向剪贴板** | Unicode 文本、PNG/DIB 图片与 Windows 换行符处理 |
 | **原生管理** | SwiftUI 菜单栏、权限检查、端口配置、服务启停及故障恢复 |
@@ -101,7 +103,7 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.2.0 预览版源码。
+构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.2.1 预览版源码。
 
 ## 项目与贡献
 

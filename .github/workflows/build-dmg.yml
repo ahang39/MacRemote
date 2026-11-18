@@ -25,7 +25,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install cmake ninja pkg-config opus openssl@4 json-c
+          brew install cmake ninja pkg-config
 
       - name: Build native app and run tests
         shell: bash
@@ -43,7 +43,7 @@ jobs:
           MACREMOTE_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          app=$(find "$HOME/Library/Caches/MacRemote/product" -maxdepth 1 -type d -name 'MacRemote-*.app' | head -n 1)
+          app=$(find "$GITHUB_WORKSPACE/.build/output" -maxdepth 1 -type d -name 'MacRemote-*.app' | head -n 1)
           test -n "$app"
           python3 tools/package-dmg.py --app "$app" --arch "$MACREMOTE_ARCH" --out "$RUNNER_TEMP/MacRemote-macos-$MACREMOTE_ARCH-adhoc.dmg"
 
