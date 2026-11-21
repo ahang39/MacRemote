@@ -17,8 +17,8 @@ enum BandwidthMode: String, CaseIterable, Identifiable {
 
     var summary: String {
         switch self {
-        case .high: "60 fps · up to 100 Mbps · 128 kbps audio"
-        case .low: "15 fps · ≤200 KB/s cap · 48 kbps audio"
+        case .high: "60 fps · up to 100 Mbps · lossless PCM audio"
+        case .low: "15 fps · ≤200 KB/s cap · 48–64 kbps audio"
         }
     }
 

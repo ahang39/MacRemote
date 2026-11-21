@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS")
-project(MacRemote VERSION 0.3.1 LANGUAGES C OBJC)
+project(MacRemote VERSION 0.3.2 LANGUAGES C OBJC)
 if(NOT APPLE)
   message(FATAL_ERROR "MacRemote requires macOS")
 endif()
@@ -55,7 +55,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 add_library(remote-audio STATIC src/audio/remote_audio.c)
 target_include_directories(remote-audio PRIVATE "${src}/server/shadow/Mac")
-target_link_libraries(remote-audio PUBLIC mac-shadow PkgConfig::OPUS)
+target_link_libraries(remote-audio PUBLIC mac-shadow PkgConfig::OPUS "-framework AudioToolbox")
 
 add_executable(macremote
   src/macremote.c src/graphics/rdp_graphics.c src/stream/stream_profile.c

@@ -23,21 +23,24 @@ static void test_profiles_and_budget(void)
     assert(strcmp(high->name, "high") == 0);
     assert(strcmp(low->name, "low") == 0);
 
-    /* High mode: LAN-optimized 60 fps, 100 Mbps ceiling, uncapped pacer, 128k Opus. */
+    /* High mode: LAN-optimized 60 fps, 100 Mbps ceiling, uncapped pacer, lossless PCM audio. */
     assert(high->maxFps == 60);
     assert(high->h264Bitrate == 100000000);
     assert(high->maxInFlight == 8);
     assert(high->pacerBytesPerSec == 0);
     assert(high->audioBitrate == 128000);
+    assert(high->audioPreferLossless);
     assert(high->refineFrames == 1);
 
     /* Low mode: strict <= 200 KB/s wire budget (including >=15% framing/TLS/TCP margin). */
     assert(low->maxFps == 15);
     assert(low->maxInFlight <= 3);
     assert(low->pacerBytesPerSec > 0 && low->pacerBurstBytes > 0);
+    assert(!low->audioPreferLossless);
     assert(low->wireBudgetBytesPerSec == 200000);
-    const uint64_t worstPayloadBps =
-        (uint64_t)low->pacerBytesPerSec + (uint64_t)(low->audioBitrate / 8u);
+    /* Account for AAC-LC minimum 64 kbps (8,000 B/s) as worst-case compressed audio. */
+    const uint64_t worstAudioBps = low->audioBitrate >= 64000u ? (low->audioBitrate / 8u) : 8000u;
+    const uint64_t worstPayloadBps = (uint64_t)low->pacerBytesPerSec + worstAudioBps;
     const uint64_t worstWireEstimate = (worstPayloadBps * 115u) / 100u;
     assert(worstWireEstimate < low->wireBudgetBytesPerSec);
 }

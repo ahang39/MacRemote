@@ -19,7 +19,8 @@ typedef struct {
     uint32_t pacerBurstBytes;   /* Token bucket burst capacity (bytes) */
     uint32_t refineDelayMs;     /* Delay after last update before idle refine frame */
     uint32_t refineFrames;      /* Idle refine frames (default 1 with SPS VUI fix) */
-    uint32_t audioBitrate;      /* Opus stereo CBR bitrate (bps) */
+    uint32_t audioBitrate;      /* Compressed audio target bitrate (bps: Opus 48k / AAC 64k) */
+    bool audioPreferLossless;   /* High (LAN): prefer 48 kHz 16-bit stereo PCM; Low: compressed */
     uint32_t wireBudgetBytesPerSec; /* 0 = uncapped; Low mode = 200000 B/s */
 } MRStreamProfile;
 

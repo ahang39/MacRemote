@@ -4,11 +4,13 @@
 /* Single source of truth for MacRemote's two bandwidth modes.
  *
  * High (LAN): unrestricted 60 fps, 100 Mbps H.264 ceiling (no DataRateLimits,
- *   no byte pacer, 8 frames in flight), 128 kbps stereo Opus.
+ *   no byte pacer, 8 frames in flight), lossless 48 kHz 16-bit stereo PCM audio
+ *   (1.536 Mbps = 192 KB/s, zero resample/encode latency; falls back to 128 kbps
+ *   Opus/AAC if a client omits PCM).
  * Low (WAN): strictly bounded under 200 KB/s (200,000 B/s) on the wire:
- *   video pacer <= 155,000 B/s + audio 6,000 B/s (48 kbps CBR) = 161,000 B/s
- *   payload, leaving ~39,000 B/s (~20%) for RDPGFX/Wave2/TLS/TCP framing and
- *   input/cursor/clipboard traffic.
+ *   video pacer <= 155,000 B/s + compressed audio (48 kbps Opus = 6,000 B/s or
+ *   64 kbps AAC-LC = 8,000 B/s) <= 163,000 B/s payload, leaving ~37,000 B/s
+ *   (~19%) for RDPGFX/Wave2/TLS/TCP framing and input/cursor/clipboard traffic.
  */
 static const MRStreamProfile kProfiles[] = {
     [MR_BANDWIDTH_HIGH] = {
@@ -22,6 +24,7 @@ static const MRStreamProfile kProfiles[] = {
         .refineDelayMs = 400u,
         .refineFrames = 1u,
         .audioBitrate = 128000u,
+        .audioPreferLossless = true,
         .wireBudgetBytesPerSec = 0u,
     },
     [MR_BANDWIDTH_LOW] = {
@@ -35,6 +38,7 @@ static const MRStreamProfile kProfiles[] = {
         .refineDelayMs = 300u,
         .refineFrames = 1u,
         .audioBitrate = 48000u,
+        .audioPreferLossless = false,
         .wireBudgetBytesPerSec = 200000u,
     },
 };

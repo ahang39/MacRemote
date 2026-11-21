@@ -134,6 +134,7 @@ static void applyPrimaryPreferences(NSDictionary *profile, bool connected)
     activeBandwidth = connected ? effectiveBandwidth(profile) : defaultBandwidth;
     const MRStreamProfile *stream = mr_stream_profile_get(activeBandwidth);
     mr_remote_audio_set_bitrate(stream->audioBitrate);
+    mr_remote_audio_set_prefer_lossless(stream->audioPreferLossless);
     mr_remote_audio_set_volume(connected ? effectiveVolume(profile) : 0);
 }
 
@@ -229,7 +230,9 @@ void mr_client_preferences_default_bandwidth(MRBandwidthMode mode)
     defaultBandwidth = mode == MR_BANDWIDTH_LOW ? MR_BANDWIDTH_LOW : MR_BANDWIDTH_HIGH;
     if (connectedClients.count == 0) {
         activeBandwidth = defaultBandwidth;
-        mr_remote_audio_set_bitrate(mr_stream_profile_get(defaultBandwidth)->audioBitrate);
+        const MRStreamProfile *stream = mr_stream_profile_get(defaultBandwidth);
+        mr_remote_audio_set_bitrate(stream->audioBitrate);
+        mr_remote_audio_set_prefer_lossless(stream->audioPreferLossless);
     }
     pthread_mutex_unlock(&preferencesLock);
 }

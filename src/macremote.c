@@ -175,6 +175,7 @@ static BOOL macremote_connect(rdpShadowSubsystem *s, rdpShadowClient *c)
 
 static void macremote_disconnect(rdpShadowSubsystem *s, rdpShadowClient *c)
 {
+    mr_remote_audio_detach(c);
     mr_client_preferences_disconnect(c);
     mr_compat_client_disconnected(c);
     if (macremote_input_original.disconnect)

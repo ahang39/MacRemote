@@ -2,6 +2,7 @@ name: Source checks
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -35,6 +36,7 @@ jobs:
             apps/macos/MacRemoteDelegate.swift \
             apps/macos/MacRemoteMenu.swift \
             apps/macos/ServerController.swift \
+            apps/macos/BandwidthModeSettings.swift \
             apps/macos/ListenPortSettings.swift \
             apps/macos/DisplayModels.swift \
             apps/macos/DisplayModeService.swift \
@@ -45,14 +47,18 @@ jobs:
             apps/macos/EditableResolutionComboBox.swift \
             apps/macos/ServerRestartPolicy.swift
 
-      - name: Port preference regression
+      - name: Port and bandwidth preference regression
         shell: bash
         run: |
           set -euo pipefail
-          xcrun swiftc -O -parse-as-library \
+          xcrun swiftc -O -parse-as-library -swift-version 5 \
             apps/macos/ListenPortSettings.swift tests/test_port_settings.swift \
             -o "$RUNNER_TEMP/test-port-settings"
           "$RUNNER_TEMP/test-port-settings"
+          xcrun swiftc -O -parse-as-library -swift-version 5 \
+            apps/macos/BandwidthModeSettings.swift tests/test_bandwidth_mode_settings.swift \
+            -o "$RUNNER_TEMP/test-bandwidth-mode-settings"
+          "$RUNNER_TEMP/test-bandwidth-mode-settings"
 
       - name: Display preferences and restart regression
         shell: bash
@@ -64,12 +70,14 @@ jobs:
             apps/macos/DisplayModeOperations.swift \
             apps/macos/DisplayConfigurationStore.swift \
             apps/macos/ClientDevicePreferences.swift \
+            apps/macos/BandwidthModeSettings.swift \
             apps/macos/DisplayOutputSettings.swift \
             tests/test_display_output_settings.swift \
             -o "$RUNNER_TEMP/test-display"
           "$RUNNER_TEMP/test-display"
-          xcrun swiftc -O -parse-as-library \
-            apps/macos/ServerController.swift apps/macos/ListenPortSettings.swift \
+          xcrun swiftc -O -parse-as-library -swift-version 5 \
+            apps/macos/ServerController.swift apps/macos/BandwidthModeSettings.swift \
+            apps/macos/ListenPortSettings.swift \
             apps/macos/ServerRestartPolicy.swift tests/test_server_restart_policy.swift \
             -o "$RUNNER_TEMP/test-restart"
           "$RUNNER_TEMP/test-restart"
