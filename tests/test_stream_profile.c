@@ -23,9 +23,10 @@ static void test_profiles_and_budget(void)
     assert(strcmp(high->name, "high") == 0);
     assert(strcmp(low->name, "low") == 0);
 
-    /* High mode: LAN-optimized 60 fps, uncapped pacer, 128k Opus. */
+    /* High mode: LAN-optimized 60 fps, 100 Mbps ceiling, uncapped pacer, 128k Opus. */
     assert(high->maxFps == 60);
-    assert(high->h264Bitrate >= 6000000);
+    assert(high->h264Bitrate == 100000000);
+    assert(high->maxInFlight == 8);
     assert(high->pacerBytesPerSec == 0);
     assert(high->audioBitrate == 128000);
     assert(high->refineFrames == 1);

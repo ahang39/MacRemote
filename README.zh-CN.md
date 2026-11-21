@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><img src="https://img.shields.io/badge/release-v0.3.0--alpha-D48752" alt="v0.3.0 预览版"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1"><img src="https://img.shields.io/badge/release-v0.3.1--alpha-D48752" alt="v0.3.1 预览版"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon 和 Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="源码检查"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><strong>下载 MacRemote</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1"><strong>下载 MacRemote</strong></a>
   &nbsp;·&nbsp; <a href="#下载安装">下载安装</a>
   &nbsp;·&nbsp; <a href="#主要功能">主要功能</a>
   &nbsp;·&nbsp; <a href="README.md">English</a>
@@ -34,18 +34,18 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 - **Windows 零额外客户端。** 打开 `mstsc`，输入 Mac 地址，使用已有 Mac 账户密码登录。
 - **保留日常操作习惯。** 原生键鼠、双向文本与图片剪贴板，以及内置 Karabiner-Elements 基础映射规则兼容。
 - **让 Retina 显示更舒服。** RDP 传输分辨率和 Mac 桌面 HiDPI 缩放分开设置，不必为了放大界面同步提高传输像素数。
-- **高/低两档带宽，按设备实时切换。** **高带宽（内网）** 支持 60 fps / 8 Mbps VideoToolbox H.264 与 128 kbps 立体声 Opus；**低带宽（≤200 KB/s 外网）** 通过 15 fps 限帧、VideoToolbox 峰值限速、服务端令牌桶限流与 48 kbps 立体声 Opus，以总流量 200 KB/s 为目标，支持在线切换（严格限流与真实 Windows 客户端仍待验证）。
+- **高/低两档带宽，按设备实时切换。** **高带宽（内网）** 支持最高 60 fps / 100 Mbps VideoToolbox H.264（不设峰值限流）与 128 kbps 立体声 Opus；**低带宽（≤200 KB/s 外网）** 通过 15 fps 限帧、VideoToolbox 峰值限速、服务端令牌桶限流与 48 kbps 立体声 Opus，以总流量 200 KB/s 为目标，支持在线切换（严格限流与真实 Windows 客户端仍待验证）。
 - **断开后停止采集。** 首个 RDP 客户端连接后才启动屏幕和系统音频采集，最后一个客户端断开便停止，减少空闲资源占用。
 - **原生 Mac 体验。** 小巧的 SwiftUI 菜单栏界面，安装包自带运行依赖，目标机器不需要安装 Homebrew。
 
 ## 下载安装
 
-**最新预览版：[v0.3.0-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1)** · 要求 macOS 14 或更新版本。
+**最新预览版：[v0.3.1-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1)** · 要求 macOS 14 或更新版本。
 
 | Mac 机型 | 下载 |
 | --- | --- |
-| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-arm64.dmg)** |
-| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-x86_64.dmg)** |
+| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.1-preview.1/MacRemote-v0.3.1-macos-arm64.dmg)** |
+| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.1-preview.1/MacRemote-v0.3.1-macos-x86_64.dmg)** |
 
 1. 打开 DMG，将 **MacRemote.app** 拖进「应用程序」，按提示授予「屏幕与系统音频录制」权限。
 2. 从菜单栏启动 RDP 服务，默认监听 **TCP 3389**。
@@ -56,7 +56,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 当前 DMG 使用**固定自签名发布证书（`Ahang Open Source Release Signing`），尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。从旧版 `v0.2.x`（Ad-hoc 签名）升级时，由于代码签名身份变化，macOS 可能需要你在隐私设置中先移除再重新勾选一次「屏幕与系统音频录制」（以及「辅助功能」）；后续同证书更新可保持身份稳定，通常不再需要重复授权。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
 > [!NOTE]
-> [v0.3.0-preview.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
+> [v0.3.1-preview.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
 
 ## 主要功能
 
@@ -87,7 +87,7 @@ MacRemote 统一使用硬件加速的 **VideoToolbox H.264/AVC420** 管线，通
 
 | 模式 | 视频流 | 远程音频（立体声 Opus） | 流量控制 |
 | --- | --- | --- | --- |
-| **High · LAN**（新设备默认） | 最高 **60 fps** · **8.0 Mbps** 平均码率（1 秒峰值限速 1.2×） | **128 kbps**（16 KB/s） | 最多 6 帧在途，不限速 |
+| **High · LAN**（新设备默认） | 最高 **60 fps** · **100 Mbps** 上限（不设 `DataRateLimits`） | **128 kbps**（16 KB/s） | 最多 8 帧在途，不限速 |
 | **Low · ≤200 KB/s** | 最高 **15 fps** · **1.05 Mbps** 平均码率（1 秒峰值限速 1.2×） | **48 kbps**（6 KB/s） | **155 KB/s** 服务端令牌桶限流，最多 3 帧在途 |
 
 协商 `<32` 位色的客户端会自动退回经典 `BitmapUpdate` 兼容路径。菜单栏每秒刷新真实服务端发送速率（KB/s）、发送 FPS 与 RDPGFX 帧确认 RTT。详见 [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md) 与 [本机硬件 VideoToolbox 基准实测](docs/qa/2026-11-21-bandwidth-profiles-refactor.md)。
@@ -116,7 +116,7 @@ MacRemote 统一使用硬件加速的 **VideoToolbox H.264/AVC420** 管线，通
 
 ## 从源码构建
 
-**v0.3.0 更新：** 收敛为「高带宽（内网）/ 低带宽（≤200 KB/s 外网）」两档按设备实时切换模式，内置 H.264 SPS VUI 零缓冲改写、服务端 1 Hz 实时流量/帧率/ACK 延迟统计与重构后的分组卡片菜单栏界面（详见 [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)）。真实 Windows `mstsc` 端到端验收待进行。
+**v0.3.1 更新：** 收敛为「高带宽（内网）/ 低带宽（≤200 KB/s 外网）」两档按设备实时切换模式，内置 H.264 SPS VUI 零缓冲改写、服务端 1 Hz 实时流量/帧率/ACK 延迟统计与重构后的分组卡片菜单栏界面（详见 [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)）。真实 Windows `mstsc` 端到端验收待进行。
 
 需要 macOS 14+、Xcode Command Line Tools、CMake、Ninja、pkg-config、Perl 和 Python 3：
 
@@ -126,7 +126,7 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.3.0 预览版源码。
+构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.3.1 预览版源码。
 
 ## 项目与贡献
 

@@ -18,7 +18,7 @@ Root-cause investigation showed why AVC420 suffered both LAN latency and WAN ban
 ## Decision
 
 1. **Collapse graphics selection into a single H.264/AVC420 pipeline with two bandwidth modes** (`src/stream/stream_profile.c`):
-   - **High (`high`, LAN — default for new devices):** 60 fps max capture/encode, 8.0 Mbps H.264 average (`DataRateLimits` 1.2×/1 s), 6 frames in flight, uncapped server pacer, 128 kbps stereo Opus (16 KB/s), 1 idle refinement frame after 250 ms.
+   - **High (`high`, LAN — default for new devices):** 60 fps max capture/encode, 100 Mbps H.264 ceiling (no `DataRateLimits`, no server byte pacer), 8 frames in flight, 128 kbps stereo Opus (16 KB/s), 1 idle refinement frame after 400 ms.
    - **Low (`low`, WAN ≤ 200 KB/s):** 15 fps max capture/encode (0 ms wait on first frame after idle), 1.05 Mbps H.264 average (`DataRateLimits` 1.2×/1 s), 155 KB/s server token-bucket byte pacer (64 KB burst), 3 frames in flight, 48 kbps stereo Opus (6 KB/s), 1 idle refinement frame after 300 ms. Worst-case sustained payload (155 + 6 = 161 KB/s) stays below 200 KB/s on the wire including RDPGFX/Wave2/TLS/TCP framing.
    - Clients negotiating `<32bpp` automatically fall back to legacy `BitmapUpdate` per connection (`freerdp-3.33.1-mstsc-color-depth.patch`), eliminating the manual Classic mode toggle.
    - Remove RemoteFX Progressive, mid-session codec switching, AVC444, and separate 1.4/2.0/4.0 Mbps presets from both the server and UI.

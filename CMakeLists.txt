@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS")
-project(MacRemote VERSION 0.3.0 LANGUAGES C OBJC)
+project(MacRemote VERSION 0.3.1 LANGUAGES C OBJC)
 if(NOT APPLE)
   message(FATAL_ERROR "MacRemote requires macOS")
 endif()

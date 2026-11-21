@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><img src="https://img.shields.io/badge/release-v0.3.0--alpha-D48752" alt="v0.3.0 alpha"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1"><img src="https://img.shields.io/badge/release-v0.3.1--alpha-D48752" alt="v0.3.1 alpha"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon and Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="Source checks"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1"><strong>Download for macOS</strong></a>
   &nbsp;·&nbsp; <a href="#get-started">Get started</a>
   &nbsp;·&nbsp; <a href="#features">Features</a>
   &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
@@ -34,18 +34,18 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 - **Use Windows' built-in client.** Open `mstsc`, connect over your LAN or VPN, and sign in with your Mac account.
 - **Keep your Mac workflow.** Native keyboard and mouse input, bidirectional text/image clipboard, and built-in compatibility for supported Karabiner-Elements basic rules.
 - **Make Retina readable.** Choose the RDP output resolution separately from the macOS HiDPI desktop. Adjust UI scale without forcing the remote video to use that same resolution.
-- **Two clear bandwidth modes, live per device.** **High (LAN)** targets 60 fps / 8 Mbps VideoToolbox H.264 with 128 kbps stereo Opus; **Low (≤200 KB/s)** targets 200 KB/s total via 15 fps gating, VideoToolbox rate limits, a server token-bucket pacer, and 48 kbps stereo Opus; live switching and strict wire-rate enforcement await Windows validation.
+- **Two clear bandwidth modes, live per device.** **High (LAN)** targets up to 60 fps / 100 Mbps VideoToolbox H.264 (no peak limiter) with 128 kbps stereo Opus; **Low (≤200 KB/s)** targets 200 KB/s total via 15 fps gating, VideoToolbox rate limits, a server token-bucket pacer, and 48 kbps stereo Opus; live switching and strict wire-rate enforcement await Windows validation.
 - **Less work while disconnected.** Screen and system-audio capture start when a client connects and stop after the last disconnects.
 - **A real Mac app.** Compact SwiftUI menu bar controls; self-contained binaries with pinned runtime dependencies—no Homebrew required to run the downloaded app.
 
 ## Get started
 
-**Latest preview: [v0.3.0-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1)** · macOS 14 or newer.
+**Latest preview: [v0.3.1-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1)** · macOS 14 or newer.
 
 | Your Mac | Download |
 | --- | --- |
-| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-arm64.dmg)** |
-| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-x86_64.dmg)** |
+| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.1-preview.1/MacRemote-v0.3.1-macos-arm64.dmg)** |
+| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.1-preview.1/MacRemote-v0.3.1-macos-x86_64.dmg)** |
 
 1. Open the DMG and drag **MacRemote.app** into **Applications**. Grant **Screen & System Audio Recording** when prompted.
 2. Start the RDP server from the menu bar (default **TCP 3389**).
@@ -56,7 +56,7 @@ For diagnostics when mstsc does not prompt, use python3 tools/make-mstsc-profile
 These preview packages use a **fixed self-signed release certificate (`Ahang Open Source Release Signing`)** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. When upgrading from earlier `v0.2.x` ad-hoc builds, macOS may ask you to remove and re-grant **Screen & System Audio Recording** (and **Accessibility**) once because the signing identity changed; future updates signed with the same release certificate will keep a consistent identity. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
 
 > [!NOTE]
-> The [v0.3.0-preview.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
+> The [v0.3.1-preview.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.1-preview.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
 
 ## Features
 
@@ -87,7 +87,7 @@ MacRemote uses a single hardware-accelerated **VideoToolbox H.264/AVC420** pipel
 
 | Mode | Video | Audio (stereo Opus) | Flow control |
 | --- | --- | --- | --- |
-| **High · LAN** *(default)* | Up to **60 fps** · **8.0 Mbps** avg (`DataRateLimits` 1.2×/1 s) | **128 kbps** (16 KB/s) | 6 frames in flight, uncapped pacer |
+| **High · LAN** *(default)* | Up to **60 fps** · **100 Mbps** ceiling (no `DataRateLimits`) | **128 kbps** (16 KB/s) | 8 frames in flight, uncapped pacer |
 | **Low · ≤200 KB/s** | Up to **15 fps** · **1.05 Mbps** avg (`DataRateLimits` 1.2×/1 s) | **48 kbps** (6 KB/s) | **155 KB/s** token-bucket video pacer, 3 frames in flight |
 
 Clients negotiating `<32-bit` color automatically fall back to legacy RDP `BitmapUpdate`. The menu bar displays real 1 Hz server telemetry (outbound KB/s, sent FPS, and RDPGFX frame-ACK RTT). See [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md) and the [local hardware VideoToolbox benchmark](docs/qa/2026-11-21-bandwidth-profiles-refactor.md).
@@ -116,7 +116,7 @@ The menu-bar app uses an automatic virtual-screen fallback **only when macOS has
 
 ## Build from source
 
-**v0.3.0 updates:** Consolidated into two live per-device bandwidth modes (**High · LAN** and **Low · ≤200 KB/s**), rewritten low-latency H.264 SPS VUI (`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`), server-side 1 Hz throughput/FPS/ACK-RTT telemetry, and a redesigned grouped menu bar popover (see [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)). Real Windows `mstsc` end-to-end validation is pending.
+**v0.3.1 updates:** Consolidated into two live per-device bandwidth modes (**High · LAN** and **Low · ≤200 KB/s**), rewritten low-latency H.264 SPS VUI (`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`), server-side 1 Hz throughput/FPS/ACK-RTT telemetry, and a redesigned grouped menu bar popover (see [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)). Real Windows `mstsc` end-to-end validation is pending.
 
 On macOS 14+ with Xcode Command Line Tools, CMake, Ninja, pkg-config, Perl and Python 3:
 

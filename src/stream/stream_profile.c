@@ -3,7 +3,8 @@
 
 /* Single source of truth for MacRemote's two bandwidth modes.
  *
- * High (LAN): smooth 60 fps, 8 Mbps H.264, 128 kbps stereo Opus.
+ * High (LAN): unrestricted 60 fps, 100 Mbps H.264 ceiling (no DataRateLimits,
+ *   no byte pacer, 8 frames in flight), 128 kbps stereo Opus.
  * Low (WAN): strictly bounded under 200 KB/s (200,000 B/s) on the wire:
  *   video pacer <= 155,000 B/s + audio 6,000 B/s (48 kbps CBR) = 161,000 B/s
  *   payload, leaving ~39,000 B/s (~20%) for RDPGFX/Wave2/TLS/TCP framing and
@@ -13,12 +14,12 @@ static const MRStreamProfile kProfiles[] = {
     [MR_BANDWIDTH_HIGH] = {
         .mode = MR_BANDWIDTH_HIGH,
         .name = "high",
-        .h264Bitrate = 8000000u,
+        .h264Bitrate = 100000000u,
         .maxFps = 60u,
-        .maxInFlight = 6u,
+        .maxInFlight = 8u,
         .pacerBytesPerSec = 0u,
         .pacerBurstBytes = 0u,
-        .refineDelayMs = 250u,
+        .refineDelayMs = 400u,
         .refineFrames = 1u,
         .audioBitrate = 128000u,
         .wireBudgetBytesPerSec = 0u,

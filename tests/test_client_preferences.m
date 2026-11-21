@@ -174,7 +174,7 @@ int main(void)
 
         ShadowStreamProfile profile = { 0 };
         assert(mr_client_preferences_stream_profile(&first, &profile));
-        assert(profile.bitrate == 8000000 && profile.maxFps == 60 && profile.pacerBytesPerSec == 0);
+        assert(profile.bitrate == 100000000 && profile.maxFps == 60 && profile.pacerBytesPerSec == 0);
         assert(mr_client_preferences_capture_max_fps() == 60);
         assert([sessionResult()[@"mode"] isEqual:@"high"]);
         assert([sessionResult()[@"colorDepth"] intValue] == 32);

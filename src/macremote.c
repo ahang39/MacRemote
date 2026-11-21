@@ -66,7 +66,7 @@ static void usage(FILE *out)
           "\n"
           "Log in using the account name and password of the Mac user running the server.\n"
           "Default: all interfaces, port 3389, TLS + macOS PAM, H.264/AVC420, high bandwidth.\n"
-          "Bandwidth modes: high (LAN, 60 fps / 8 Mbps) or low (WAN, <=200 KB/s total).\n"
+          "Bandwidth modes: high (LAN, 60 fps / 100 Mbps) or low (WAN, <=200 KB/s total).\n"
           "Use --bind 127.0.0.1 for local-only testing; --port PORT to override.\n", out);
 }
 
@@ -275,7 +275,7 @@ static void status(bool json)
         printf("Mac login account: %s (existing macOS password)\n", account_name());
         printf("Screen recording: %s\n", capture ? "granted" : "permission needed");
         puts("Default: all interfaces :3389; TLS + PAM; H.264/AVC420 (VideoToolbox)");
-        puts("Bandwidth modes: high (LAN, 60 fps / 8 Mbps) | low (WAN, <=200 KB/s)");
+        puts("Bandwidth modes: high (LAN, 60 fps / 100 Mbps) | low (WAN, <=200 KB/s)");
         puts("Keyboard: built-in Karabiner basic-rule compatibility; Quartz passthrough without config");
         puts("Unicode/IME text input bypasses physical-key remapping");
     }

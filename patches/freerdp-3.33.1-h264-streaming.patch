@@ -633,14 +633,17 @@ index c5728d3..d884302 100644
  	return videotoolbox_encoder_append(enc, startCode, sizeof(startCode)) &&
  	       videotoolbox_encoder_append(enc, nal, size);
  }
-@@ -842,6 +852,32 @@ static BOOL videotoolbox_encoder_set_qp(H264_CONTEXT_VT_ENCODER *enc, UINT32 qp)
+@@ -842,6 +852,35 @@ static BOOL videotoolbox_encoder_set_qp(H264_CONTEXT_VT_ENCODER *enc, UINT32 qp)
  	                                      1.0f - (1.0f * (float)value / 51.0f), "Quality");
  }
  
 +static void videotoolbox_encoder_set_data_rate_limits(H264_CONTEXT_VT_ENCODER *enc, UINT32 bitRate)
 +{
-+	/* Pair AverageBitRate with a 1-second DataRateLimits cap (~1.2x avg) so
-+	 * scene cuts and full-screen scrolling do not spike past tight links. */
++	/* Only enforce a 1-second DataRateLimits cap (~1.2x avg) on bandwidth-constrained
++	 * profiles (e.g. Low WAN mode). High LAN profiles need unrestricted burst headroom
++	 * for crisp large-area desktop updates. */
++	if (bitRate > 4000000u)
++		return;
 +	const int64_t bytesPerSec = MAX((int64_t)(((uint64_t)bitRate * 6u) / 40u), 16384);
 +	const double windowSec = 1.0;
 +	CFNumberRef limit = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &bytesPerSec);
@@ -666,7 +669,7 @@ index c5728d3..d884302 100644
  WINPR_ATTR_NODISCARD
  static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCODER *enc,
                                          UINT32 width, UINT32 height, UINT32 frameRate,
-@@ -898,7 +934,9 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+@@ -898,7 +937,9 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
  	/* Baseline, as OpenH264 sends: every RDP client decodes it */
  	(void)videotoolbox_encoder_set(enc, kVTCompressionPropertyKey_ProfileLevel,
  	                               kVTProfileLevel_H264_Baseline_AutoLevel, "ProfileLevel");
@@ -677,7 +680,7 @@ index c5728d3..d884302 100644
  	                                   "MaxKeyFrameInterval");
  	(void)videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_ExpectedFrameRate,
  	                                   (int32_t)frameRate, "ExpectedFrameRate");
-@@ -914,6 +952,7 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+@@ -914,6 +955,7 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
  			if (!videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_AverageBitRate,
  			                                  (int32_t)MIN(bitRate, INT32_MAX), "AverageBitRate"))
  				goto fail;
@@ -685,10 +688,12 @@ index c5728d3..d884302 100644
  			break;
  	}
  
-@@ -992,6 +1031,7 @@ static BOOL videotoolbox_encoder_update(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+@@ -992,6 +1034,9 @@ static BOOL videotoolbox_encoder_update(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
  		if (!videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_AverageBitRate,
  		                                  (int32_t)MIN(bitRate, INT32_MAX), "AverageBitRate"))
  			return videotoolbox_encoder_create(h264, enc, width, height, frameRate, bitRate);
++		if ((enc->bitRate <= 4000000u) != (bitRate <= 4000000u))
++			return videotoolbox_encoder_create(h264, enc, width, height, frameRate, bitRate);
 +		videotoolbox_encoder_set_data_rate_limits(enc, bitRate);
  		enc->bitRate = bitRate;
  	}
