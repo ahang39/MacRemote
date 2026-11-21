@@ -6,19 +6,23 @@
 #include <math.h>
 #include <opus.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 enum {
     sampleRate = 48000,
     channels = 2,
-    bitrate = 256000,
+    defaultBitrate = 128000,
+    minBitrate = 24000,
+    maxBitrate = 256000,
     framesPerPacket = sampleRate / 50,
-    bytesPerPacket = bitrate / 8 / 50,
+    maxPacketBytes = maxBitrate / 8 / 50,
     fadeFrames = sampleRate / 200,
     wave2Version = 8
 };
 
 typedef struct {
     unsigned volume;
+    unsigned bitrate;
     uint64_t generation;
 } AudioSettings;
 
@@ -26,25 +30,35 @@ typedef struct {
     SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES message;
     uint64_t generation;
     UINT32 timestamp;
-    BYTE data[bytesPerPacket];
+    size_t length;
+    BYTE data[maxPacketBytes];
 } AudioPacket;
 
 static AUDIO_FORMAT opusFormat = {
-    WAVE_FORMAT_OPUS, channels, sampleRate, bitrate / 8, 1, 16, 0, NULL
+    WAVE_FORMAT_OPUS, channels, sampleRate, defaultBitrate / 8, 1, 16, 0, NULL
 };
 static pfnShadowSubsystemInit shadowInit;
 static pfnShadowSubsystemFree shadowFree;
 static pthread_mutex_t settingsLock = PTHREAD_MUTEX_INITIALIZER;
-static AudioSettings settings;
+static AudioSettings settings = { .volume = 0, .bitrate = defaultBitrate, .generation = 0 };
+static _Atomic uint64_t audioBytesSent;
 
 static struct {
     OpusEncoder *encoder;
     uint64_t generation;
+    unsigned bitrate;
     size_t frames;
     float gain;
     UINT64 lastAudible;
     float pcm[framesPerPacket * channels];
 } capture;
+
+static unsigned clampBitrate(unsigned bps)
+{
+    if (bps < minBitrate) return minBitrate;
+    if (bps > maxBitrate) return maxBitrate;
+    return bps;
+}
 
 static AudioSettings readSettings(void)
 {
@@ -68,6 +82,24 @@ void mr_remote_audio_set_volume(unsigned percent)
     pthread_mutex_unlock(&settingsLock);
 }
 
+unsigned mr_remote_audio_bitrate(void)
+{
+    return readSettings().bitrate;
+}
+
+void mr_remote_audio_set_bitrate(unsigned bps)
+{
+    const unsigned clamped = clampBitrate(bps);
+    pthread_mutex_lock(&settingsLock);
+    settings.bitrate = clamped;
+    pthread_mutex_unlock(&settingsLock);
+}
+
+uint64_t mr_remote_audio_take_bytes_sent(void)
+{
+    return atomic_exchange_explicit(&audioBytesSent, 0, memory_order_relaxed);
+}
+
 static UINT sendPacket(RdpsndServerContext *channel, const void *buffer, size_t frames,
                        UINT16 timestamp)
 {
@@ -78,9 +110,12 @@ static UINT sendPacket(RdpsndServerContext *channel, const void *buffer, size_t 
     // Serialize the final rdpsnd write with applying mute of the same stream.
     pthread_mutex_lock(&settingsLock);
     if (settings.volume && packet->generation == settings.generation &&
-        channel->clientVersion >= wave2Version) {
+        channel->clientVersion >= wave2Version && packet->length > 0 &&
+        packet->length <= sizeof(packet->data)) {
         result = channel->SendSamples2(channel, channel->selected_client_format, packet->data,
-                                       sizeof(packet->data), timestamp, packet->timestamp);
+                                       packet->length, timestamp, packet->timestamp);
+        if (result == CHANNEL_RC_OK)
+            atomic_fetch_add_explicit(&audioBytesSent, packet->length, memory_order_relaxed);
     }
     pthread_mutex_unlock(&settingsLock);
 
@@ -111,6 +146,11 @@ static void encodePacket(rdpShadowServer *server, AudioSettings current)
     if (!capture.lastAudible || now - capture.lastAudible >= 200)
         return;
 
+    if (capture.bitrate != current.bitrate) {
+        if (opus_encoder_ctl(capture.encoder, OPUS_SET_BITRATE((opus_int32)current.bitrate)) == OPUS_OK)
+            capture.bitrate = current.bitrate;
+    }
+
     const float target = current.volume / 100.0f;
     for (size_t frame = 0; frame < framesPerPacket; ++frame) {
         const float fraction = frame < fadeFrames ? (float)(frame + 1) / fadeFrames : 1.0f;
@@ -123,15 +163,21 @@ static void encodePacket(rdpShadowServer *server, AudioSettings current)
     AudioPacket *packet = calloc(1, sizeof(*packet));
     if (!packet)
         return;
+    const size_t expectedBytes = capture.bitrate / 8 / 50;
+    const opus_int32 maxBytes =
+        expectedBytes > 0 && expectedBytes <= sizeof(packet->data)
+            ? (opus_int32)expectedBytes
+            : (opus_int32)sizeof(packet->data);
     const int length = opus_encode_float(capture.encoder, capture.pcm, framesPerPacket,
-                                        packet->data, sizeof(packet->data));
-    if (length != bytesPerPacket) {
+                                         packet->data, maxBytes);
+    if (length <= 0 || (size_t)length > sizeof(packet->data)) {
         free(packet);
         return;
     }
 
     packet->generation = current.generation;
     packet->timestamp = (UINT32)now;
+    packet->length = (size_t)length;
     packet->message.common.Free = freePacket;
     packet->message.audio_format = &opusFormat;
     packet->message.buf = packet;
@@ -178,13 +224,16 @@ static int configureAudio(rdpShadowSubsystem *subsystem)
     if (result < 0)
         return result;
 
+    const unsigned initialBitrate = readSettings().bitrate;
     int error;
     capture.encoder = opus_encoder_create(sampleRate, channels, OPUS_APPLICATION_AUDIO, &error);
     if (!capture.encoder)
         return -1;
-    if (opus_encoder_ctl(capture.encoder, OPUS_SET_BITRATE(bitrate)) != OPUS_OK ||
+    if (opus_encoder_ctl(capture.encoder, OPUS_SET_BITRATE((opus_int32)initialBitrate)) != OPUS_OK ||
         opus_encoder_ctl(capture.encoder, OPUS_SET_VBR(0)) != OPUS_OK)
         return -1;
+    capture.bitrate = initialBitrate;
+    atomic_store_explicit(&audioBytesSent, 0, memory_order_relaxed);
 
     AUDIO_FORMAT *formats = audio_formats_new(1);
     if (!formats)
@@ -209,6 +258,7 @@ static void freeAudio(rdpShadowSubsystem *subsystem)
     shadowFree(subsystem);
     opus_encoder_destroy(capture.encoder);
     memset(&capture, 0, sizeof(capture));
+    atomic_store_explicit(&audioBytesSent, 0, memory_order_relaxed);
 }
 
 extern int ShadowSubsystemEntry(RDP_SHADOW_ENTRY_POINTS *entry);

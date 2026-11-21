@@ -18,7 +18,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--client", required=True)
-    parser.add_argument("--compat-graphics", action="store_true")
     args = parser.parse_args()
     for binary in (args.server, args.client):
         if not Path(binary).is_file():
@@ -28,6 +27,11 @@ def main():
         root = Path(dirname)
         env = dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(root),
                    WLOG_LEVEL="INFO")
+        # An invalid leftover verifier used to stop startup before TLS negotiation.
+        legacy_verifier = root / "Library/Application Support/MacRemote/rdp-ntlm.sam"
+        legacy_verifier.parent.mkdir(parents=True)
+        legacy_verifier.write_bytes(b"synthetic retired verifier\n")
+        legacy_verifier.chmod(0o644)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -35,8 +39,6 @@ def main():
         with (root / "server.log").open("w") as logfile:
             server_args = [args.server, "serve", "--bind", "127.0.0.1",
                            "--port", str(port)]
-            if args.compat_graphics:
-                server_args.append("--compat-graphics")
             server = subprocess.Popen(
                 server_args,
                 cwd=root, env=env, stdout=logfile,
@@ -61,7 +63,10 @@ def main():
                 client = subprocess.run(
                     [args.client, f"/v:127.0.0.1:{port}",
                      "/u:__macremote_invalid_account__", f"/p:{password}",
-                     "/cert:ignore", "/sec:tls", "-gfx",
+                     "/cert:ignore", "/sec:tls", "/clipboard", "-gfx",
+                     # Keep this TCP-only; the sample client can fail on a
+                     # multitransport message before reaching the PAM check.
+                     "-multitransport",
                      "/size:1920x1080", "/bpp:32"],
                     cwd=root, env=env, capture_output=True, text=True, timeout=15
                 )
@@ -72,11 +77,20 @@ def main():
                 assert "login as '__macremote_invalid_account__' refused" in server_text, (
                     "Expected upstream macOS Shadow PAM username callback not observed"
                 )
-                assert "FIRST_FRAME_MS" not in client_text, (
+                assert all(marker not in client_text for marker in
+                           ("FIRST_FRAME_MS", "TEST_LOGIN_FRAME")), (
                     "Unexpected rendered desktop frame despite rejected account"
                 )
-                print("PASS TLS session reached macOS PAM and denied invalid Mac login")
-                print("PASS no desktop pixels delivered for rejected credentials")
+                assert "MacRemote clipboard: cliprdr channel started" not in server_text, (
+                    "Unexpected clipboard session before authentication"
+                )
+                assert " is activated (" not in server_text, (
+                    "Rejected login was recorded as desktop activation"
+                )
+                assert legacy_verifier.read_bytes() == b"synthetic retired verifier\n"
+                print("PASS TLS reached the macOS authentication callback and rejected the invalid account")
+                print("PASS no desktop pixels or clipboard session for rejected credentials")
+                print("PASS leftover verifier had no effect on startup and was preserved")
             finally:
                 if server.poll() is None:
                     os.killpg(server.pid, signal.SIGTERM)

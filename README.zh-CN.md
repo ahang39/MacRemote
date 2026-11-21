@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.1--alpha-D48752" alt="v0.2.1 预览版"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><img src="https://img.shields.io/badge/release-v0.3.0--alpha-D48752" alt="v0.3.0 预览版"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon 和 Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="源码检查"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><strong>下载 MacRemote</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><strong>下载 MacRemote</strong></a>
   &nbsp;·&nbsp; <a href="#下载安装">下载安装</a>
   &nbsp;·&nbsp; <a href="#主要功能">主要功能</a>
   &nbsp;·&nbsp; <a href="README.md">English</a>
@@ -34,27 +34,29 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 - **Windows 零额外客户端。** 打开 `mstsc`，输入 Mac 地址，使用已有 Mac 账户密码登录。
 - **保留日常操作习惯。** 原生键鼠、双向文本与图片剪贴板，以及内置 Karabiner-Elements 基础映射规则兼容。
 - **让 Retina 显示更舒服。** RDP 传输分辨率和 Mac 桌面 HiDPI 缩放分开设置，不必为了放大界面同步提高传输像素数。
-- **不同设备有自己的设置。** 记住每个客户端的显示偏好、视频目标码率和远程音量；H.264/AVC420 可动态选择 1.4 / 2.0 / 4.0 Mbps，音频使用立体声 Opus。
+- **高/低两档带宽，按设备实时切换。** **高带宽（内网）** 支持 60 fps / 8 Mbps VideoToolbox H.264 与 128 kbps 立体声 Opus；**低带宽（≤200 KB/s 外网）** 通过 15 fps 限帧、VideoToolbox 峰值限速、服务端令牌桶限流与 48 kbps 立体声 Opus，以总流量 200 KB/s 为目标，支持在线切换（严格限流与真实 Windows 客户端仍待验证）。
 - **断开后停止采集。** 首个 RDP 客户端连接后才启动屏幕和系统音频采集，最后一个客户端断开便停止，减少空闲资源占用。
 - **原生 Mac 体验。** 小巧的 SwiftUI 菜单栏界面，安装包自带运行依赖，目标机器不需要安装 Homebrew。
 
 ## 下载安装
 
-**最新预览版：[v0.2.1-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1)** · 要求 macOS 14 或更新版本。
+**最新预览版：[v0.3.0-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1)** · 要求 macOS 14 或更新版本。
 
 | Mac 机型 | 下载 |
 | --- | --- |
-| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-arm64.dmg)** |
-| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-x86_64.dmg)** |
+| Apple Silicon（M1/M2/M3/M4 等） | **[Apple Silicon 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-arm64.dmg)** |
+| Intel（x86_64） | **[Intel 版 DMG](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-x86_64.dmg)** |
 
 1. 打开 DMG，将 **MacRemote.app** 拖进「应用程序」，按提示授予「屏幕与系统音频录制」权限。
 2. 从菜单栏启动 RDP 服务，默认监听 **TCP 3389**。
-3. 在 Windows 打开 `mstsc`，连接 `Mac的IP:3389`，用已有 Mac 用户名和密码登录。
+3. Windows 首次使用 `mstsc /prompt /v:Mac的IP:3389` 打开原生凭据窗口。验证服务端证书后，输入 Mac 用户名和密码。如果 Windows 提供保存选项，之后可用 `mstsc /v:Mac的IP:3389` 或已保存的 RDP 文件连接。
 
-当前 DMG 使用 **Ad-hoc 签名，尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
+如果 mstsc 不弹密码框，可用 python3 tools/make-mstsc-profile.py --host Mac的IP --output MacRemote.rdp 做诊断，但客户端缓存和策略可能阻止弹框；2026 年 4 月后未签名 .rdp 文件还会增加发布者警告。零配置方案仍在验证，见 docs/qa/2026-11-19-mstsc-credential-prompt.md。
+
+当前 DMG 使用 **固定自签名发布证书（Ahang Open Source Release Signing），尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
 > [!NOTE]
-> [v0.2.1-adhoc.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
+> [v0.3.0-preview.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
 
 ## 主要功能
 
@@ -62,9 +64,9 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 | --- | --- |
 | **标准 RDP** | Windows `mstsc`、FreeRDP 3.33.1 Shadow、TLS + macOS PAM 账号登录 |
 | **Retina / HiDPI** | RDP 输出与 Mac UI 缩放独立；100%～200% 共 8 档；优先复用已有 HiDPI 分辨率 |
-| **客户端独立偏好** | 记住输出分辨率、标称缩放、实际 HiDPI 模式、视频目标码率及音频设置 |
-| **H.264 视频** | VideoToolbox 加速 AVC420，可实时调整目标码率，处理显示比例及鼠标坐标映射 |
-| **远程音频** | 客户端支持时通过 `rdpsnd` 传输 48 kHz 立体声 Opus，独立音量与严格静音 |
+| **客户端独立偏好** | 记住输出分辨率、标称缩放、实际 HiDPI 模式、带宽模式（高/低）及音频设置 |
+| **低延迟 H.264** | VideoToolbox AVC420 + SPS VUI 零重排改写、1 秒峰值限速、低带宽令牌桶控流及实时速率/帧率/ACK 延迟显示 |
+| **远程音频** | 客户端支持时通过 `rdpsnd` 传输 48 kHz 立体声 Opus（高带宽 128 kbps / 低带宽 48 kbps），静音抑制与严格静音 |
 | **按需屏幕采集** | 最后一个客户端断开后停止 ScreenCaptureKit 视频与系统音频采集，重连时恢复 |
 | **键鼠控制** | 原生 Quartz 输入，内置 Karabiner basic manipulator 兼容层 |
 | **双向剪贴板** | Unicode 文本、PNG/DIB 图片与 Windows 换行符处理 |
@@ -89,11 +91,23 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 
 服务端使用 C/Objective-C，界面使用 AppKit/SwiftUI；没有自定义远控协议，不需要云账号或额外常驻中转服务。第三方依赖固定版本并打包进 App。
 
-**当前范围：**连接 Mac 已登录的桌面，不包括开机前的 FileVault 解锁界面和 macOS 登录界面。认证使用 TLS + PAM，暂不支持 NLA；AVC444 仍属实验性模式。不同客户端的音频协商、输入法和重连边界持续实测优化。
+**当前范围：**连接 Mac 已登录的桌面，使用 TLS + PAM 验证 Mac 账号。AVC444 仍属实验性模式。不同客户端的音频协商、输入法和重连边界持续实测优化。
 
 更多细节：[技术架构](docs/ARCHITECTURE.md) · [设计决策](docs/adr/) · [测试矩阵](docs/TESTING.md) · [发布清单](docs/RELEASE_CHECKLIST.md)。
 
+## Windows 原生登录与记住密码
+
+从菜单栏启动 MacRemote，用当前 Mac 账号登录。如果用过实验版的 Windows 登录设置，下次在原生凭据窗口中使用 Mac 账号密码。实验版单独设置的 RDP 密码无法通过 PAM。MacRemote 会保留原有登记文件和 Windows 凭据。如果 Windows 尝试使用旧密码，请在原生窗口更新此 MacRemote 目标对应的凭据。
+
+保存和复用凭据取决于 Windows 及其策略。要求 NLA 的客户端无法连接此版本。在受影响的受管客户端上，退出 `mstsc` 或重启服务后能否复用凭据，仍需实测。[Windows 验收步骤](docs/TESTING.md#saved-credentials-on-windows)
+
+## 无屏幕远程（开发版）
+
+菜单栏启动 RDP 时，如果 macOS **完全没有在线显示器**，MacRemote 自动创建自有虚拟屏；已有实体屏或 BetterDisplay 虚拟屏时不创建、不释放第三方显示器。命令行需在 macremote serve 后明确加 --headless。默认 1920×1080，也可读取原有 RDP 输出分辨率。需已登录 macOS 桌面并授予屏幕录制权限。虚拟显示器实现、运行时 API 检查及有屏无副作用测试已通过；**真实完全无屏的 Windows mstsc 画面尚未验收**。
+
 ## 从源码构建
+
+**v0.3.0 更新：** 收敛为「高带宽（内网）/ 低带宽（≤200 KB/s 外网）」两档按设备实时切换模式，内置 H.264 SPS VUI 零缓冲改写、服务端 1 Hz 实时流量/帧率/ACK 延迟统计与重构后的分组卡片菜单栏界面（详见 [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)）。真实 Windows `mstsc` 端到端验收待进行。
 
 需要 macOS 14+、Xcode Command Line Tools、CMake、Ninja、pkg-config、Perl 和 Python 3：
 
@@ -103,7 +117,7 @@ cd MacRemote
 ./tools/build-dev-app.sh
 ```
 
-构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.2.1 预览版源码。
+构建完成后在 `.build/output/` 得到包含私有运行时依赖的 App。详见[构建指南](docs/m2/README.md)。从 `main` 分支可以获得完整 v0.3.0 预览版源码。
 
 ## 项目与贡献
 

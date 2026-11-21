@@ -1,0 +1,217 @@
+diff --git a/server/shadow/Mac/mac_shadow.h b/server/shadow/Mac/mac_shadow.h
+--- a/server/shadow/Mac/mac_shadow.h
++++ b/server/shadow/Mac/mac_shadow.h
+@@ -69,6 +69,14 @@
+ 	REGION16 pending;
+ 	HANDLE frameEvent;
+ 	BOOL sizeWarned;
++	/* Previous BGRA surface is complete and safe for exact tile comparison.
++	 * Reset on resize / when stopping capture. */
++	BOOL surfacePixelsReady;
++	UINT64 scaledDiffFrames;
++	UINT64 scaledDiffSkipped;
++	UINT64 scaledDiffTiles;
++	UINT64 scaledDiffFull;
++	UINT64 scaledDiffLastLog;
+ 
+ 	/* input state: mouse buttons down, modifiers down, the last click */
+ 	UINT32 buttonsDown;
+diff --git a/server/shadow/Mac/mac_shadow.c b/server/shadow/Mac/mac_shadow.c
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -48,6 +48,7 @@
+ #endif
+ 
+ #include "mac_shadow.h"
++#include "mac_scaled_dirty.h"
+ 
+ #define TAG SERVER_TAG("shadow.mac")
+ 
+@@ -929,17 +930,84 @@
+ 		UINT32 count = 0;
+ 		const RECTANGLE_16* rects = region16_rects(&region, &count);
+ 
++		BOOL actualChange = TRUE;
+ 		EnterCriticalSection(&surface->lock);
+-		for (UINT32 x = 0; x < count; x++)
++		/* Scaling makes ScreenCaptureKit report the full destination as dirty
++		 * for safety. Keep that full local BGRA refresh, but find the *actual*
++		 * RGB changes against the prior published shadow surface before sending
++		 * RemoteFX tiles. Fast path only when the incoming region covers all. */
++		const RECTANGLE_16* extent = region16_extents(&region);
++		const BOOL allDirty = extent && extent->left == 0 && extent->top == 0 &&
++		                        extent->right == surface->width &&
++		                        extent->bottom == surface->height;
++		BOOL handledWithTiles = FALSE;
++		if (allDirty && mac->surfacePixelsReady &&
++		    surface->format == PIXEL_FORMAT_BGRX32 && stride <= UINT32_MAX)
+ 		{
+-			const RECTANGLE_16* rect = &rects[x];
+-			(void)freerdp_image_copy_no_overlap(
+-			    surface->data, surface->format, surface->scanline, rect->left, rect->top,
+-			    rect->right - rect->left, rect->bottom - rect->top, data, PIXEL_FORMAT_BGRX32,
+-			    (UINT32)stride, rect->left, rect->top, nullptr, FREERDP_FLIP_NONE);
+-			(void)region16_union_rect(&surface->invalidRegion, &surface->invalidRegion, rect);
++			macScaledDirtyRect tiles[64] = { 0 };
++			const UINT32 tileCount =
++			    mac_scaled_collect_dirty(data, stride, surface->data, surface->scanline,
++			                             surface->width, surface->height, tiles, ARRAYSIZE(tiles));
++			mac->scaledDiffFrames++;
++			if (tileCount != MAC_SCALED_DIRTY_FULL)
++			{
++				handledWithTiles = TRUE;
++				mac->scaledDiffTiles += tileCount;
++				actualChange = tileCount != 0;
++				if (!actualChange)
++					mac->scaledDiffSkipped++;
++				for (UINT32 t = 0; t < tileCount; t++)
++				{
++					/* Both formats are 32-bit BGRX/BGRA; use the regular
++					 * pixel copier to keep alpha/stride handling identical. */
++					const macScaledDirtyRect* tile = &tiles[t];
++					const RECTANGLE_16 changed = {
++					    tile->left, tile->top, tile->right, tile->bottom
++					};
++					(void)freerdp_image_copy_no_overlap(
++					    surface->data, surface->format, surface->scanline,
++					    changed.left, changed.top,
++					    changed.right - changed.left, changed.bottom - changed.top,
++					    data, PIXEL_FORMAT_BGRX32, (UINT32)stride,
++					    changed.left, changed.top, nullptr, FREERDP_FLIP_NONE);
++					(void)region16_union_rect(&surface->invalidRegion,
++					                          &surface->invalidRegion, &changed);
++				}
++			}
++			else
++				mac->scaledDiffFull++;
++		}
++		if (!handledWithTiles)
++		{
++			for (UINT32 x = 0; x < count; x++)
++			{
++				const RECTANGLE_16* rect = &rects[x];
++				(void)freerdp_image_copy_no_overlap(
++				    surface->data, surface->format, surface->scanline, rect->left, rect->top,
++				    rect->right - rect->left, rect->bottom - rect->top, data, PIXEL_FORMAT_BGRX32,
++				    (UINT32)stride, rect->left, rect->top, nullptr, FREERDP_FLIP_NONE);
++				(void)region16_union_rect(&surface->invalidRegion, &surface->invalidRegion, rect);
++			}
++			if (allDirty)
++				mac->surfacePixelsReady = TRUE;
++		}
++		const UINT64 now = GetTickCount64();
++		if (mac->scaledDiffFrames && now - mac->scaledDiffLastLog >= 5000)
++		{
++			mac->scaledDiffLastLog = now;
++			WLog_INFO(TAG, "scaled surface damage: checked=%" PRIu64
++			          " unchanged=%" PRIu64 " tiles=%" PRIu64 " large=%" PRIu64,
++			          mac->scaledDiffFrames, mac->scaledDiffSkipped,
++			          mac->scaledDiffTiles, mac->scaledDiffFull);
++			mac->scaledDiffFrames = mac->scaledDiffSkipped = 0;
++			mac->scaledDiffTiles = mac->scaledDiffFull = 0;
+ 		}
+ 		LeaveCriticalSection(&surface->lock);
++		if (!actualChange)
++		{
++			(void)CVPixelBufferUnlockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
++			goto out;
++		}
+ 	}
+ 
+ 	(void)CVPixelBufferUnlockBaseAddress(frame, kCVPixelBufferLock_ReadOnly);
+@@ -1233,6 +1301,7 @@
+ 	region16_clear(&mac->pending);
+ 	LeaveCriticalSection(&mac->frameLock);
+ 	mac->sizeWarned = FALSE;
++	mac->surfacePixelsReady = FALSE;
+ 
+ 	if (desktopChanged && !shadow_screen_resize(subsystem->server->screen))
+ 		WLog_ERR(TAG, "the surface could not take the new size");
+@@ -1319,6 +1388,7 @@
+ 					CVPixelBufferRelease(mac->frame);
+ 				mac->frame = nullptr;
+ 				region16_clear(&mac->pending);
++				mac->surfacePixelsReady = FALSE;
+ 				LeaveCriticalSection(&mac->frameLock);
+ 				(void)ResetEvent(mac->frameEvent);
+ 				if (mac->audioStream)
+diff --git a/server/shadow/Mac/mac_scaled_dirty.h b/server/shadow/Mac/mac_scaled_dirty.h
+new file mode 100644
+--- /dev/null
++++ b/server/shadow/Mac/mac_scaled_dirty.h
+@@ -0,0 +1,75 @@
++/* Full-resolution BGRA/BGRX output damage comparison.
++ * For ScreenCaptureKit streams scaled to the RDP dimensions, the capture
++ * delegate conservatively refreshes the entire BGRA buffer because its dirty
++ * metadata can refer to source-space coordinates. We compare actual RGB pixels
++ * with the last published surface instead of trusting that imprecise region.
++ * Alpha/X is deliberately ignored: BGRX does not define channel 4.
++ *
++ * This is an exact lossless test, not a perceptual difference or checksum:
++ * changed pixels cannot be dropped. A high change count requests a full copy.
++ */
++#ifndef MAC_SCALED_DIRTY_H
++#define MAC_SCALED_DIRTY_H
++#include <stdint.h>
++#include <stddef.h>
++#define MAC_SCALED_DIRTY_TILE_SIZE 128u
++#define MAC_SCALED_DIRTY_FULL UINT32_MAX
++
++typedef struct
++{
++    uint16_t left, top, right, bottom;
++} macScaledDirtyRect;
++
++static inline int mac_scaled_tile_different(const uint8_t* src, size_t srcStride,
++                                            const uint8_t* old, size_t oldStride,
++                                            uint32_t left, uint32_t top,
++                                            uint32_t right, uint32_t bottom)
++{
++    for (uint32_t y = top; y < bottom; y++)
++    {
++        const uint8_t *s = src + (size_t)y * srcStride + (size_t)left * 4u;
++        const uint8_t *d = old + (size_t)y * oldStride + (size_t)left * 4u;
++        for (uint32_t x = left; x < right; x++, s += 4, d += 4)
++        {
++            if (s[0] != d[0] || s[1] != d[1] || s[2] != d[2])
++                return 1;
++        }
++    }
++    return 0;
++}
++
++/* Returns number of exact changed tiles, or MAC_SCALED_DIRTY_FULL when too
++ * much screen changed or any input is invalid. In the latter case, the
++ * caller must copy the full frame (never silently lose damage). */
++static inline uint32_t mac_scaled_collect_dirty(const uint8_t* src, size_t srcStride,
++                                                const uint8_t* previous, size_t previousStride,
++                                                uint32_t width, uint32_t height,
++                                                macScaledDirtyRect* rects, uint32_t capacity)
++{
++    if (!src || !previous || !rects || !capacity || !width || !height ||
++        width > UINT16_MAX || height > UINT16_MAX ||
++        srcStride < (size_t)width * 4u || previousStride < (size_t)width * 4u)
++        return MAC_SCALED_DIRTY_FULL;
++    uint32_t count = 0;
++    for (uint32_t y = 0; y < height; y += MAC_SCALED_DIRTY_TILE_SIZE)
++    {
++        const uint32_t bottom = (height - y < MAC_SCALED_DIRTY_TILE_SIZE)
++            ? height : y + MAC_SCALED_DIRTY_TILE_SIZE;
++        for (uint32_t x = 0; x < width; x += MAC_SCALED_DIRTY_TILE_SIZE)
++        {
++            const uint32_t right = (width - x < MAC_SCALED_DIRTY_TILE_SIZE)
++                ? width : x + MAC_SCALED_DIRTY_TILE_SIZE;
++            if (mac_scaled_tile_different(src, srcStride, previous, previousStride,
++                                          x, y, right, bottom))
++            {
++                if (count == capacity)
++                    return MAC_SCALED_DIRTY_FULL;
++                rects[count++] = (macScaledDirtyRect){
++                    (uint16_t)x, (uint16_t)y, (uint16_t)right, (uint16_t)bottom
++                };
++            }
++        }
++    }
++    return count;
++}
++#endif

@@ -17,6 +17,7 @@ Status: **M1/M2 measurements available; native Windows MSTSC TLS/PAM login and c
 | Connection | New connection, reconnect, wrong credentials, unauthorized session |
 | mstsc compatibility | TLS+PAM Mac account login, display reconnect, clipboard/channel capability negotiation |
 | Display | First RDP connection preserves current mode, user-selected HiDPI mode is recorded per machine, correct logical/backing sizes, mouse coordinates, reconnect, UU/local coexistence, sleep/wake (ADR-0009) |
+| Graphics & bandwidth | On the same `mstsc` client, connect with 16-bit then 32-bit color (auto legacy BitmapUpdate vs H.264/AVC420). Switch live between **High · LAN** (60 fps / 8 Mbps / 128 kbps Opus) and **Low · ≤200 KB/s** (15 fps / 1.05 Mbps + 155 KB/s byte pacer / 48 kbps Opus) without reconnecting. Verify 1 Hz UI rate/FPS/ACK-RTT telemetry, final-frame stability (`MACREMOTE_AVC_REFINE_FRAMES=0` vs `1`), and ≤200 KB/s total wire rate under 80 ms RTT shaping. |
 | RDP output/scaling | Editable 16:9 output width/height, two baseline choices plus custom WxH, eight nonlinear scale choices, hidden fixed 3% existing-HiDPI reuse threshold, near-16:9 checks and draft-only selection, explicit creation/restart-required/unsupported/apply mode states, independent transport pixels, 2x backing capture, cursor/mouse/drag/resize, existing display override preservation (ADR-0010) |
 | Remote audio | Drag 100% → 25% → 0% during playback, mute/unmute at 25%, reconnect two devices with different preferences, disconnect the primary while both are connected, check local Mac playback throughout |
 | Input | Mouse buttons, drag, long press, wheel, keyboard left/right modifiers, Command/Option, IME, Caps Lock, release on disconnect |
@@ -26,6 +27,23 @@ Status: **M1/M2 measurements available; native Windows MSTSC TLS/PAM login and c
 | Office workloads | VS Code or equivalent typing, terminal scrolling, browser scrolling, text selection, copy/paste |
 | Stability | Repeated connects/disconnects, permission revocation, unplugged display, long-running session |
 | Security | Listener bind defaults, denied remote access, certificate validation, log redaction |
+
+### Saved credentials on Windows
+
+Use an approved Windows test client with its existing security policies. Keep the same
+account, certificate trust and target when comparing builds. Use the native credential
+dialog once with the current Mac password and save it if Windows offers the option.
+Record the negotiated security protocol, whether Windows prompted and whether the desktop
+opened, without recording credentials. Run each case independently:
+
+1. Interrupt the active connection briefly and observe whether it reconnects.
+2. Close the `mstsc` process completely and make a new connection without forcing a prompt.
+3. Restart the isolated MacRemote server, then make a new connection with a fresh `mstsc` process.
+
+Cases 2 and 3 must both open the desktop without a new prompt to pass saved-credential
+reuse. Case 1 can use RDP automatic reconnection. Separately check rejection of missing or
+invalid credentials before desktop channels start. An NLA-required client should fail
+negotiation with the TLS/PAM build. See the [NLA experiment](qa/2026-11-20-native-nla-rollout.md#credential-reuse-regression-primary-evidence-and-decision).
 
 ### Clipboard and IME verification
 
@@ -98,15 +116,21 @@ review. See [ADR-0007](adr/0007-native-macos-login.md).
   announcements and a new local copy during an outstanding remote request.
 - The native remote audio test drives the production capture callback with
   synthetic stereo samples and decodes the Opus packets submitted to
-  `rdpsnd`. It checks 640 bytes per 20 ms, 0 bytes during mute, and stale
-  packet rejection on unmute. Swift tests cover updates to legacy profiles
-  and preserved display fields. Client playback, format negotiation and
-  end-to-end timing require real RDP sessions.
+  `rdpsnd`. It checks dynamic 128 kbps (320 B) ↔ 48 kbps (120 B) packets per
+  20 ms, 0 bytes during mute, stale packet rejection on unmute, and `rdp-session.json`
+  telemetry publishing. Native H.264 tests verify SPS VUI low-latency rewriting
+  (`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`), real VideoToolbox
+  1080p/1296p roundtrip decoding, and the Low-mode ≤200 KB/s wire budget and
+  token-bucket pacer. Swift tests cover `BandwidthMode`, `SessionStatus`, legacy
+  profile preservation, and display settings. Client playback, format negotiation
+  and end-to-end timing require real RDP sessions.
 - The [real TLS/PAM loopback test](../tests/test_loopback.py) starts MacRemote
   with an explicit 127.0.0.1 test bind and an ephemeral port; the headless
   FreeRDP client negotiates TLS, supplies a *nonexistent* username, reaches
-  macOS Shadow PAM, and is refused without receiving desktop pixels. This
-  avoids supplying the user's actual password or risking lockouts.
+  the macOS Shadow authentication callback, and is refused before desktop
+  pixels or clipboard exchange.
+  It also checks startup with a synthetic leftover verifier from the NLA experiment.
+  This avoids supplying the user's actual password or risking lockouts.
 - The actual Windows mstsc login happy path **was verified on 2026-11-16**
   using the Windows interactive console session and an already-saved system
   credential; no password was read or exported. Display, pointer and

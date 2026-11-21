@@ -5,6 +5,8 @@
 #include <freerdp/server/shadow.h>
 #include <freerdp/settings.h>
 #include <winpr/synch.h>
+#include <winpr/collections.h>
+#include <winpr/sysinfo.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <freerdp/input.h>
@@ -12,9 +14,11 @@
 #include "input/karabiner_compat.h"
 #include "input/mac_clipboard.h"
 #include "graphics/rdp_graphics.h"
+#include "stream/stream_profile.h"
 #include "device/client_preferences.h"
 #include "audio/remote_audio.h"
 #include "input/pointer_geometry.h"
+#include "display/headless_virtual.h"
 
 #include <arpa/inet.h>
 #include <mach-o/dyld.h>
@@ -33,16 +37,12 @@
 static volatile sig_atomic_t stop_requested = 0;
 static void stop_signal(int signum) { (void)signum; stop_requested = 1; }
 
-
 /* Quartz display-change notifications require an active event run loop.
- * The shadow server used to Sleep() on its main thread, leaving its
- * CoreGraphics display bounds cached after AppKit/other processes switched
- * logical HiDPI resolution. The capture and pointer geometry then referred
- * to different desktop sizes. Keep the main CFRunLoop processing events and
- * let FreeRDP's per-second display watcher rebuild its capture as needed. */
+ * Keep the main CFRunLoop processing events so FreeRDP's display watcher sees
+ * logical HiDPI resolution changes and keeps capture and pointer bounds aligned. */
 static void macremote_display_reconfiguration(CGDirectDisplayID display,
-                                                CGDisplayChangeSummaryFlags flags,
-                                                void* context)
+                                              CGDisplayChangeSummaryFlags flags,
+                                              void *context)
 {
     (void)context;
     if (flags & kCGDisplayBeginConfigurationFlag)
@@ -59,27 +59,26 @@ static void macremote_display_reconfiguration(CGDirectDisplayID display,
 static void usage(FILE *out)
 {
     fputs("MacRemote — FreeRDP macOS server\n"
-          "  macremote serve [--port 3389] [--bind IP] [--gfx avc444|h264|balanced|classic]\n"
+          "  macremote serve [--port 3389] [--bind IP] [--bandwidth high|low] [--headless]\n"
           "  macremote status [--json]\n"
           "  macremote doctor\n"
           "  macremote version\n"
           "\n"
           "Log in using the account name and password of the Mac user running the server.\n"
-          "Default: all interfaces, port 3389, TLS + macOS PAM, full keyboard/mouse.\n"
-          "Use --bind 127.0.0.1 for local-only testing; --port PORT to override.\n"
-          "Default graphics: Classic. Other --gfx values are experimental.\n", out);
+          "Default: all interfaces, port 3389, TLS + macOS PAM, H.264/AVC420, high bandwidth.\n"
+          "Bandwidth modes: high (LAN, 60 fps / 8 Mbps) or low (WAN, <=200 KB/s total).\n"
+          "Use --bind 127.0.0.1 for local-only testing; --port PORT to override.\n", out);
 }
 
-
-/* FreeRDP's native macOS backend builds the original CGEvents and keeps the
- * RDP-to-Apple scan-code mapping. Only the final event is transformed here.
- * The callback runs in MacRemote's own RDP process; no Karabiner process,
- * driver, helper application, or additional service is required. */
 extern void mac_shadow_set_input_filter(CGEventRef (*filter)(CGEventRef));
-extern void shadow_client_set_avc420_bitrate_provider(UINT32 (*provider)(const rdpShadowClient*));
-extern void shadow_channels_set_clipboard_hooks(UINT (*on_connect)(rdpShadowClient*),
-                                                 void (*on_disconnect)(rdpShadowClient*));
-
+extern void mac_shadow_set_max_fps_provider(UINT32 (*provider)(void));
+extern void shadow_client_set_stream_profile_provider(
+    BOOL (*provider)(const rdpShadowClient *, ShadowStreamProfile *));
+extern void shadow_client_set_stream_stats_observer(
+    void (*observer)(const rdpShadowClient *, const ShadowStreamStats *));
+extern void shadow_channels_set_clipboard_hooks(UINT (*on_connect)(rdpShadowClient *),
+                                                void (*on_disconnect)(rdpShadowClient *));
+extern BOOL mac_shadow_stream_geometry_ready(const rdpShadowSubsystem *subsystem);
 
 static struct {
     pfnShadowClientConnect connect;
@@ -110,8 +109,6 @@ static BOOL macremote_unicode(rdpShadowSubsystem *s, rdpShadowClient *c,
     return result;
 }
 
-extern BOOL mac_shadow_stream_geometry_ready(const rdpShadowSubsystem *subsystem);
-
 static BOOL macremote_pointer_ready(rdpShadowSubsystem *s, rdpShadowClient *c)
 {
     if (!s || !c || !c->context.settings || s->selectedMonitor >= s->numMonitors)
@@ -119,7 +116,12 @@ static BOOL macremote_pointer_ready(rdpShadowSubsystem *s, rdpShadowClient *c)
     const MONITOR_DEF *monitor = &s->monitors[s->selectedMonitor];
     const UINT32 width = (UINT32)(monitor->right - monitor->left + 1);
     const UINT32 height = (UINT32)(monitor->bottom - monitor->top + 1);
-    const CGRect bounds = CGDisplayBounds(CGMainDisplayID());
+    CGDirectDisplayID displayIDs[16] = { 0 };
+    uint32_t count = 0;
+    const BOOL enumerated = CGGetActiveDisplayList(16, displayIDs, &count) == kCGErrorSuccess;
+    const CGDirectDisplayID display =
+        enumerated && s->selectedMonitor < count ? displayIDs[s->selectedMonitor] : CGMainDisplayID();
+    const CGRect bounds = CGDisplayBounds(display);
     const UINT32 remoteWidth =
         freerdp_settings_get_uint32(c->context.settings, FreeRDP_DesktopWidth);
     const UINT32 remoteHeight =
@@ -129,8 +131,7 @@ static BOOL macremote_pointer_ready(rdpShadowSubsystem *s, rdpShadowClient *c)
         remoteWidth, remoteHeight, width, height,
         (UINT32)bounds.size.width, (UINT32)bounds.size.height,
         c->resizeRequested);
-    const BOOL ready = geometry && dimensions;
-    return ready;
+    return geometry && dimensions;
 }
 
 static BOOL macremote_mouse(rdpShadowSubsystem *s, rdpShadowClient *c,
@@ -239,7 +240,6 @@ static bool make_dir(const char *path, mode_t mode)
     return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
 }
 
-/* MacRemote-owned configuration, isolated from FreeRDP's global paths. */
 static char *config_path(void)
 {
     const char *home = getenv("HOME");
@@ -258,72 +258,73 @@ static char *config_path(void)
     return strdup(path);
 }
 
-
 static void status(bool json)
 {
     const bool capture = CGPreflightScreenCaptureAccess();
-    if (json)
-    {
+    if (json) {
         printf("{\"version\":\"%s\",\"account\":\"%s\","
                "\"screen_capture_granted\":%s,"
                "\"default_bind\":\"0.0.0.0\",\"default_port\":3389,"
                "\"authentication\":\"macOS PAM over TLS\","
-               "\"input\":\"enabled\",\"max_clients\":null}\n",
+               "\"input\":\"enabled\",\"max_clients\":null,"
+               "\"default_bandwidth\":\"high\"}\n",
                freerdp_get_version_string(), account_name(),
                capture ? "true" : "false");
-    }
-    else
-    {
+    } else {
         printf("MacRemote / FreeRDP %s\n", freerdp_get_version_string());
         printf("Mac login account: %s (existing macOS password)\n", account_name());
         printf("Screen recording: %s\n", capture ? "granted" : "permission needed");
-        puts("Default: all interfaces :3389; TLS + PAM; keyboard/mouse enabled");
-        puts("Client limit: FreeRDP default (no artificial MacRemote limit)");
-        puts("Negotiated codec, bitrate and RTT: N/A until telemetry is implemented");
+        puts("Default: all interfaces :3389; TLS + PAM; H.264/AVC420 (VideoToolbox)");
+        puts("Bandwidth modes: high (LAN, 60 fps / 8 Mbps) | low (WAN, <=200 KB/s)");
         puts("Keyboard: built-in Karabiner basic-rule compatibility; Quartz passthrough without config");
         puts("Unicode/IME text input bypasses physical-key remapping");
     }
 }
 
-static int serve(uint16_t port, const char *bind_address, MRGraphicsMode graphics)
+static int serve(uint16_t port, const char *bind_address, MRBandwidthMode defaultBandwidth,
+                 bool allowHeadless)
 {
-    /* Register the statically linked native macOS Shadow backend directly:
-     * avoids loading it a second time from the subsystem dylib. */
     shadow_subsystem_set_entry(mr_remote_audio_shadow_entry);
     shadow_channels_set_clipboard_hooks(mr_clipboard_client_connect,
-                                         mr_clipboard_client_disconnect);
+                                        mr_clipboard_client_disconnect);
     rdpShadowServer *server = shadow_server_new();
     if (!server) return 1;
 
     bool initialized = false;
     bool displayObserverRegistered = false;
     int result = 1;
+    const MRStreamProfile *profile = mr_stream_profile_get(defaultBandwidth);
     server->port = port;
     server->authentication = TRUE;
     server->mayView = TRUE;
     server->mayInteract = TRUE;
-    server->maxClientsConnected = 0; /* No artificial product cap. */
-    /* Prioritize text quality on large redraws; unchanged frames aren't sent. */
-    server->h264BitRate = 4000000;
+    server->maxClientsConnected = 0;
+    server->h264BitRate = profile->h264Bitrate;
+    server->h264FrameRate = profile->maxFps;
     server->ConfigPath = config_path();
 
-    if (bind_address)
-    {
+    if (bind_address) {
         size_t length = strlen(bind_address) + sizeof("bind-address,");
         server->ipcSocket = malloc(length);
         if (server->ipcSocket)
             snprintf(server->ipcSocket, length, "bind-address,%s", bind_address);
     }
-    /* A null bind address intentionally uses FreeRDP's all-interface listener. */
+
     if (!server->ConfigPath ||
         (bind_address && !server->ipcSocket) ||
-        !mr_gfx_configure(server->settings, graphics))
-    {
+        !freerdp_settings_set_bool(server->settings, FreeRDP_NlaSecurity, FALSE) ||
+        !freerdp_settings_set_bool(server->settings, FreeRDP_ExtSecurity, FALSE) ||
+        !freerdp_settings_set_bool(server->settings, FreeRDP_TlsSecurity, TRUE) ||
+        !freerdp_settings_set_bool(server->settings, FreeRDP_RdpSecurity, FALSE) ||
+        !mr_gfx_configure(server->settings)) {
         fputs("error: FreeRDP configuration failed\n", stderr);
         goto cleanup;
     }
-    if (shadow_server_init(server) < 0)
-    {
+    if (mr_headless_start(allowHeadless, server->ConfigPath) < 0) {
+        fputs("error: headless display could not be created\n", stderr);
+        goto cleanup;
+    }
+    if (shadow_server_init(server) < 0) {
         fputs("error: FreeRDP Shadow initialization failed\n", stderr);
         goto cleanup;
     }
@@ -332,34 +333,42 @@ static int serve(uint16_t port, const char *bind_address, MRGraphicsMode graphic
         fputs("error: MacRemote keyboard bridge initialization failed\n", stderr);
         goto cleanup;
     }
+
     mr_client_preferences_init(server->ConfigPath);
-    shadow_client_set_avc420_bitrate_provider(mr_client_preferences_video_bitrate);
-    if (CGDisplayRegisterReconfigurationCallback(macremote_display_reconfiguration, NULL)
-        == kCGErrorSuccess)
+    mr_client_preferences_default_bandwidth(defaultBandwidth);
+    shadow_client_set_stream_profile_provider(mr_client_preferences_stream_profile);
+    shadow_client_set_stream_stats_observer(mr_client_preferences_observe_stats);
+    mac_shadow_set_max_fps_provider(mr_client_preferences_capture_max_fps);
+
+    if (CGDisplayRegisterReconfigurationCallback(macremote_display_reconfiguration, NULL) ==
+        kCGErrorSuccess)
         displayObserverRegistered = true;
     else
-        fputs("[MacRemote display] WARNING: display change notification registration failed\n", stderr);
-    if (shadow_server_start(server) < 0)
-    {
-        fputs("error: FreeRDP listener failed (port in use or missing permissions)\n",
+        fputs("[MacRemote display] WARNING: display change notification registration failed\n",
               stderr);
+
+    if (shadow_server_start(server) < 0) {
+        fputs("error: FreeRDP listener failed (port in use or missing permissions)\n", stderr);
         goto cleanup;
     }
 
     printf("MacRemote listening on %s:%u | TLS + macOS PAM | keyboard/mouse enabled\n",
            bind_address ? bind_address : "all interfaces", (unsigned)port);
-    printf("Graphics: %s | Client limit: upstream default | Codec/bitrate/RTT: N/A\n",
-           mr_gfx_label(graphics));
+    printf("Stream: H.264/AVC420 (VideoToolbox) | Default bandwidth: %s (%u fps, %.2f Mbps)\n",
+           profile->name, profile->maxFps, (double)profile->h264Bitrate / 1000000.0);
     char input_status[256];
     mr_compat_status(input_status, sizeof(input_status));
     printf("Input: native Quartz + built-in rule compatibility | %s\n", input_status);
     fflush(stdout);
 
-    while (!stop_requested)
-    {
-        /* Quartz notifies command-line processes only if their event-processing
-         * thread services the CFRunLoop. A bare WinPR Sleep leaves resolution
-         * changes invisible to the ScreenCaptureKit shadow subsystem. */
+    UINT64 lastHeadlessCheck = GetTickCount64();
+    while (!stop_requested) {
+        const UINT64 tick = GetTickCount64();
+        if (allowHeadless && tick - lastHeadlessCheck >= 2000) {
+            lastHeadlessCheck = tick;
+            mr_headless_update(true, server->ConfigPath,
+                               server->clients && ArrayList_Count(server->clients) > 0);
+        }
         (void)CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.10, true);
         Sleep(80);
     }
@@ -369,32 +378,33 @@ cleanup:
     if (displayObserverRegistered)
         (void)CGDisplayRemoveReconfigurationCallback(macremote_display_reconfiguration, NULL);
     if (initialized) (void)shadow_server_uninit(server);
-    shadow_client_set_avc420_bitrate_provider(NULL);
+    mac_shadow_set_max_fps_provider(NULL);
+    shadow_client_set_stream_profile_provider(NULL);
+    shadow_client_set_stream_stats_observer(NULL);
     mr_client_preferences_shutdown();
     shadow_channels_set_clipboard_hooks(NULL, NULL);
     mr_clipboard_shutdown();
     mac_shadow_set_input_filter(NULL);
     mr_compat_shutdown();
     shadow_server_free(server);
+    mr_headless_stop();
     return result;
 }
 
-/* FreeRDP/WinPR loads OpenSSL 4's legacy provider with dlopen.
- * Resolve it exclusively from this .app bundle rather than Homebrew. */
 static void macremote_use_bundled_openssl(void)
 {
     char raw[PATH_MAX], resolved[PATH_MAX], modules[PATH_MAX], legacy[PATH_MAX];
-    uint32_t n=(uint32_t)sizeof(raw);
-    if (_NSGetExecutablePath(raw,&n)!=0 || !realpath(raw,resolved)) return;
-    char *slash=strrchr(resolved,'/');
+    uint32_t n = (uint32_t)sizeof(raw);
+    if (_NSGetExecutablePath(raw, &n) != 0 || !realpath(raw, resolved)) return;
+    char *slash = strrchr(resolved, '/');
     if (!slash) return;
-    *slash='\0';
-    int len=snprintf(modules,sizeof(modules),"%s/../Frameworks/ossl-modules",resolved);
-    if (len<=0 || (size_t)len>=sizeof(modules)) return;
-    len=snprintf(legacy,sizeof(legacy),"%s/legacy.dylib",modules);
-    if (len<=0 || (size_t)len>=sizeof(legacy)) return;
-    if (access(legacy,R_OK)==0)
-        (void)setenv("OPENSSL_MODULES",modules,1);
+    *slash = '\0';
+    int len = snprintf(modules, sizeof(modules), "%s/../Frameworks/ossl-modules", resolved);
+    if (len <= 0 || (size_t)len >= sizeof(modules)) return;
+    len = snprintf(legacy, sizeof(legacy), "%s/legacy.dylib", modules);
+    if (len <= 0 || (size_t)len >= sizeof(legacy)) return;
+    if (access(legacy, R_OK) == 0)
+        (void)setenv("OPENSSL_MODULES", modules, 1);
 }
 
 int main(int argc, char **argv)
@@ -402,62 +412,48 @@ int main(int argc, char **argv)
     macremote_use_bundled_openssl();
     uint16_t port = 3389;
     const char *bind_address = NULL;
-    MRGraphicsMode graphics = MR_GFX_CLASSIC;
-    if (argc == 2 && !strcmp(argv[1], "version"))
-    {
+    MRBandwidthMode bandwidth = MR_BANDWIDTH_HIGH;
+    bool allowHeadless = false;
+    if (argc == 2 && !strcmp(argv[1], "version")) {
         printf("MacRemote / FreeRDP %s\n", freerdp_get_version_string());
         return 0;
     }
-    if (argc >= 2 && (!strcmp(argv[1], "status") || !strcmp(argv[1], "doctor")))
-    {
-        bool json = argc == 3 && !strcmp(argv[1], "status") &&
-                    !strcmp(argv[2], "--json");
+    if (argc >= 2 && (!strcmp(argv[1], "status") || !strcmp(argv[1], "doctor"))) {
+        bool json = argc == 3 && !strcmp(argv[1], "status") && !strcmp(argv[2], "--json");
         if (argc != 2 && !json) return 2;
         status(json);
         return 0;
     }
-    if (argc < 2 || strcmp(argv[1], "serve"))
-    {
-        bool help = argc == 2 &&
-                    (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"));
+    if (argc < 2 || strcmp(argv[1], "serve")) {
+        bool help = argc == 2 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"));
         usage(help ? stdout : stderr);
         return help ? 0 : 2;
     }
-    for (int i = 2; i < argc; i++)
-    {
-        if (!strcmp(argv[i], "--port") && i + 1 < argc)
-        {
-            if (!parse_port(argv[++i], &port))
-            {
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--port") && i + 1 < argc) {
+            if (!parse_port(argv[++i], &port)) {
                 fputs("error: port must be 1..65535\n", stderr);
                 return 2;
             }
-        }
-        else if (!strcmp(argv[i], "--bind") && i + 1 < argc)
-        {
+        } else if (!strcmp(argv[i], "--bind") && i + 1 < argc) {
             bind_address = argv[++i];
-            if (!valid_bind_address(bind_address))
-            {
+            if (!valid_bind_address(bind_address)) {
                 fputs("error: --bind requires an IPv4 or IPv6 address\n", stderr);
                 return 2;
             }
-        }
-        else if (!strcmp(argv[i], "--compat-graphics"))
-            graphics = MR_GFX_CLASSIC; /* backward-compatible CLI alias */
-        else if (!strcmp(argv[i], "--gfx") && i + 1 < argc) {
-            const char *profile = argv[++i];
-            if (!mr_gfx_parse(profile, &graphics)) {
-                fputs("error: --gfx expects avc444, h264, balanced or classic\n", stderr);
+        } else if (!strcmp(argv[i], "--headless")) {
+            allowHeadless = true;
+        } else if (!strcmp(argv[i], "--bandwidth") && i + 1 < argc) {
+            if (!mr_bandwidth_parse(argv[++i], &bandwidth)) {
+                fputs("error: --bandwidth expects high or low\n", stderr);
                 return 2;
             }
-        }
-        else
-        {
+        } else {
             fputs("error: unrecognized serve option\n", stderr);
             return 2;
         }
     }
-    if (signal(SIGINT, stop_signal) == SIG_ERR ||
-        signal(SIGTERM, stop_signal) == SIG_ERR) return 1;
-    return serve(port, bind_address, graphics);
+    if (signal(SIGINT, stop_signal) == SIG_ERR || signal(SIGTERM, stop_signal) == SIG_ERR)
+        return 1;
+    return serve(port, bind_address, bandwidth, allowHeadless);
 }

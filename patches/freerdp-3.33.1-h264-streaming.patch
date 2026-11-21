@@ -1,0 +1,1720 @@
+diff --git a/include/freerdp/codec/h264.h b/include/freerdp/codec/h264.h
+index 609e8b9..c5222e6 100644
+--- a/include/freerdp/codec/h264.h
++++ b/include/freerdp/codec/h264.h
+@@ -76,6 +76,13 @@ extern "C"
+ 	WINPR_ATTR_NODISCARD
+ 	FREERDP_API UINT32 h264_context_get_option(H264_CONTEXT* h264, H264_CONTEXT_OPTION option);
+ 
++	/* Compress an unchanged P picture using the same YUV reference buffer.
++	 * Used for an optional idle still-text refinement frame. */
++	WINPR_ATTR_NODISCARD
++	FREERDP_API INT32 avc420_repeat(H264_CONTEXT* h264, UINT32 width, UINT32 height,
++	                                BYTE** ppDstData, UINT32* pDstSize,
++	                                RDPGFX_H264_METABLOCK* meta);
++
+ 	WINPR_ATTR_NODISCARD
+ 	FREERDP_API INT32 avc420_compress(H264_CONTEXT* h264, const BYTE* pSrcData, DWORD SrcFormat,
+ 	                                  UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
+diff --git a/libfreerdp/codec/h264.c b/libfreerdp/codec/h264.c
+index 00110b4..71b9e1b 100644
+--- a/libfreerdp/codec/h264.c
++++ b/libfreerdp/codec/h264.c
+@@ -524,6 +524,41 @@ fail:
+ 	return rc;
+ }
+ 
++/* Encode the already-prepared still YUV picture again as a normal P picture
++ * to sharpen residual quantization artifacts after motion stops. */
++INT32 avc420_repeat(H264_CONTEXT* h264, UINT32 width, UINT32 height, BYTE** ppDstData,
++                    UINT32* pDstSize, RDPGFX_H264_METABLOCK* meta)
++{
++	if (!h264 || !h264->Compressor || !h264->firstLumaFrameDone || !h264->subsystem ||
++	    !h264->subsystem->Compress || !ppDstData || !pDstSize || !meta || width == 0 ||
++	    height == 0 || width > UINT16_MAX || height > UINT16_MAX)
++		return -1;
++
++	const BYTE* frame[3];
++	for (size_t n = 0; n < 3; n++)
++		frame[n] = h264->encodingBuffer ? h264->pOldYUVData[n] : h264->pYUVData[n];
++
++	/* allocate_h264_metablock transfers ownership of this rectangle. */
++	RECTANGLE_16* full = malloc(sizeof(*full));
++	if (!full)
++		return -1;
++	*full = (RECTANGLE_16){ 0, 0, (UINT16)width, (UINT16)height };
++	if (!allocate_h264_metablock(h264->QP, full, meta, 1))
++	{
++		free_h264_metablock(meta);
++		return -1;
++	}
++
++	const INT32 result =
++	    h264->subsystem->Compress(h264, frame, h264->iStride, ppDstData, pDstSize);
++	if (result < 0 || *pDstSize == 0)
++	{
++		free_h264_metablock(meta);
++		return -1;
++	}
++	return 1;
++}
++
+ INT32 avc444_compress(H264_CONTEXT* h264, const BYTE* pSrcData, DWORD SrcFormat, UINT32 nSrcStep,
+                       UINT32 nSrcWidth, UINT32 nSrcHeight, BYTE version, const RECTANGLE_16* region,
+                       BYTE* op, BYTE** ppDstData, UINT32* pDstSize, BYTE** ppAuxDstData,
+diff --git a/libfreerdp/codec/h264_sps_vui.h b/libfreerdp/codec/h264_sps_vui.h
+new file mode 100644
+index 0000000..aef1c8a
+--- /dev/null
++++ b/libfreerdp/codec/h264_sps_vui.h
+@@ -0,0 +1,537 @@
++/* Pure-C H.264 SPS VUI low-latency rewriter.
++ *
++ * Apple VideoToolbox H.264 Baseline emits SPS NAL units without VUI
++ * parameters. Without bitstream_restriction.max_num_reorder_frames=0 and
++ * max_dec_frame_buffering=1, decoders such as Windows mstsc default to
++ * buffering up to Level MaxDpbFrames (4 at 1080p Level 4.0, 9 at 2304x1296
++ * Level 5.0), adding hundreds of milliseconds of latency on motion and
++ * stalling sparse desktop updates until synthetic drain frames are sent.
++ *
++ * This rewriter preserves all existing SPS fields (and any existing VUI fields
++ * such as colorimetry/full-range flags), sets vui_parameters_present_flag=1
++ * and bitstream_restriction_flag=1 with max_num_reorder_frames=0 and
++ * max_dec_frame_buffering=MAX(1, max_num_ref_frames), and re-inserts H.264
++ * emulation-prevention bytes. Any malformed or oversized SPS fails safely so
++ * the caller can emit the original NAL unit unchanged.
++ */
++#ifndef FREERDP_CODEC_H264_SPS_VUI_H
++#define FREERDP_CODEC_H264_SPS_VUI_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++typedef struct
++{
++	const uint8_t* data;
++	size_t bitLen;
++	size_t bitPos;
++} mrSpsBitReader;
++
++typedef struct
++{
++	uint8_t* data;
++	size_t byteCap;
++	size_t bitPos;
++} mrSpsBitWriter;
++
++typedef struct
++{
++	uint32_t profileIdc;
++	uint32_t levelIdc;
++	uint32_t maxNumRefFrames;
++	int vuiPresent;
++	int videoSignalPresent;
++	int videoFullRange;
++	int bitstreamRestrictionPresent;
++	uint32_t maxNumReorderFrames;
++	uint32_t maxDecFrameBuffering;
++} mrSpsVuiInfo;
++
++static inline int mr_sps_unescape(const uint8_t* nal, size_t nalLen, uint8_t* rbsp, size_t rbspCap,
++                                  size_t* rbspLen)
++{
++	if (!nal || !rbsp || !rbspLen || nalLen < 2)
++		return 0;
++	size_t out = 0;
++	unsigned zeros = 0;
++	for (size_t i = 1; i < nalLen; i++)
++	{
++		const uint8_t b = nal[i];
++		if (zeros == 2 && b == 3)
++		{
++			if (i + 1 >= nalLen || nal[i + 1] > 3)
++				return 0;
++			zeros = 0;
++			continue;
++		}
++		if (out >= rbspCap)
++			return 0;
++		rbsp[out++] = b;
++		zeros = (b == 0) ? (zeros < 2 ? zeros + 1 : 2) : 0;
++	}
++	*rbspLen = out;
++	return 1;
++}
++
++static inline int mr_sps_escape(uint8_t nalHeader, const uint8_t* rbsp, size_t rbspLen,
++                                uint8_t* outNal, size_t outCap, size_t* outLen)
++{
++	if (!rbsp || !outNal || !outLen || outCap < 1)
++		return 0;
++	size_t pos = 0;
++	outNal[pos++] = nalHeader;
++	unsigned zeros = 0;
++	for (size_t i = 0; i < rbspLen; i++)
++	{
++		const uint8_t b = rbsp[i];
++		if (zeros == 2 && b <= 3)
++		{
++			if (pos >= outCap)
++				return 0;
++			outNal[pos++] = 3;
++			zeros = 0;
++		}
++		if (pos >= outCap)
++			return 0;
++		outNal[pos++] = b;
++		zeros = (b == 0) ? (zeros < 2 ? zeros + 1 : 2) : 0;
++	}
++	*outLen = pos;
++	return 1;
++}
++
++static inline int mr_sps_read_bit(mrSpsBitReader* r, uint32_t* bit)
++{
++	if (r->bitPos >= r->bitLen)
++		return 0;
++	*bit = (uint32_t)((r->data[r->bitPos >> 3] >> (7u - (r->bitPos & 7u))) & 1u);
++	r->bitPos++;
++	return 1;
++}
++
++static inline int mr_sps_read_u(mrSpsBitReader* r, unsigned n, uint32_t* val)
++{
++	if (n == 0 || n > 32 || r->bitLen - r->bitPos < n)
++		return 0;
++	uint32_t v = 0;
++	for (unsigned i = 0; i < n; i++)
++	{
++		uint32_t b = 0;
++		if (!mr_sps_read_bit(r, &b))
++			return 0;
++		v = (v << 1) | b;
++	}
++	*val = v;
++	return 1;
++}
++
++static inline int mr_sps_read_ue(mrSpsBitReader* r, uint32_t* val)
++{
++	unsigned zeros = 0;
++	uint32_t b = 0;
++	while (1)
++	{
++		if (!mr_sps_read_bit(r, &b))
++			return 0;
++		if (b != 0)
++			break;
++		if (++zeros > 31)
++			return 0;
++	}
++	if (zeros == 31)
++	{
++		/* Only codeNum = UINT32_MAX fits; reject overflow safely. */
++		return 0;
++	}
++	uint32_t v = 1;
++	for (unsigned i = 0; i < zeros; i++)
++	{
++		if (!mr_sps_read_bit(r, &b))
++			return 0;
++		v = (v << 1) | b;
++	}
++	*val = v - 1u;
++	return 1;
++}
++
++static inline int32_t mr_sps_code_to_se(uint32_t code)
++{
++	return (code & 1u) ? (int32_t)((code + 1u) >> 1) : -(int32_t)(code >> 1);
++}
++
++static inline int mr_sps_write_bit(mrSpsBitWriter* w, uint32_t bit)
++{
++	if ((w->bitPos >> 3) >= w->byteCap)
++		return 0;
++	if ((w->bitPos & 7u) == 0)
++		w->data[w->bitPos >> 3] = 0;
++	if (bit & 1u)
++		w->data[w->bitPos >> 3] |= (uint8_t)(1u << (7u - (w->bitPos & 7u)));
++	w->bitPos++;
++	return 1;
++}
++
++static inline int mr_sps_write_u(mrSpsBitWriter* w, unsigned n, uint32_t val)
++{
++	if (n == 0 || n > 32)
++		return 0;
++	for (unsigned i = n; i > 0; i--)
++	{
++		if (!mr_sps_write_bit(w, (val >> (i - 1u)) & 1u))
++			return 0;
++	}
++	return 1;
++}
++
++static inline int mr_sps_write_ue(mrSpsBitWriter* w, uint32_t val)
++{
++	const uint64_t code = (uint64_t)val + 1u;
++	unsigned bits = 0;
++	for (uint64_t tmp = code; tmp > 0; tmp >>= 1)
++		bits++;
++	const unsigned zeros = bits - 1u;
++	for (unsigned i = 0; i < zeros; i++)
++	{
++		if (!mr_sps_write_bit(w, 0))
++			return 0;
++	}
++	for (unsigned i = bits; i > 0; i--)
++	{
++		if (!mr_sps_write_bit(w, (uint32_t)((code >> (i - 1u)) & 1u)))
++			return 0;
++	}
++	return 1;
++}
++
++static inline int mr_sps_copy_u(mrSpsBitReader* r, mrSpsBitWriter* w, unsigned n, uint32_t* val)
++{
++	uint32_t v = 0;
++	if (!mr_sps_read_u(r, n, &v))
++		return 0;
++	if (w && !mr_sps_write_u(w, n, v))
++		return 0;
++	if (val)
++		*val = v;
++	return 1;
++}
++
++static inline int mr_sps_copy_ue(mrSpsBitReader* r, mrSpsBitWriter* w, uint32_t* val)
++{
++	uint32_t v = 0;
++	if (!mr_sps_read_ue(r, &v))
++		return 0;
++	if (w && !mr_sps_write_ue(w, v))
++		return 0;
++	if (val)
++		*val = v;
++	return 1;
++}
++
++static inline int mr_sps_is_high_profile(uint32_t profile)
++{
++	switch (profile)
++	{
++		case 100:
++		case 110:
++		case 122:
++		case 244:
++		case 44:
++		case 83:
++		case 86:
++		case 118:
++		case 128:
++		case 138:
++		case 139:
++		case 134:
++		case 135:
++			return 1;
++		default:
++			return 0;
++	}
++}
++
++static inline int mr_sps_copy_hrd(mrSpsBitReader* r, mrSpsBitWriter* w)
++{
++	uint32_t cpbCnt = 0;
++	if (!mr_sps_copy_ue(r, w, &cpbCnt) || cpbCnt > 31)
++		return 0;
++	if (!mr_sps_copy_u(r, w, 4, NULL) || !mr_sps_copy_u(r, w, 4, NULL))
++		return 0;
++	for (uint32_t i = 0; i <= cpbCnt; i++)
++	{
++		if (!mr_sps_copy_ue(r, w, NULL) || !mr_sps_copy_ue(r, w, NULL) ||
++		    !mr_sps_copy_u(r, w, 1, NULL))
++			return 0;
++	}
++	if (!mr_sps_copy_u(r, w, 5, NULL) || !mr_sps_copy_u(r, w, 5, NULL) ||
++	    !mr_sps_copy_u(r, w, 5, NULL) || !mr_sps_copy_u(r, w, 5, NULL))
++		return 0;
++	return 1;
++}
++
++static inline int mr_sps_process(const uint8_t* inNal, size_t inLen, int rewrite, uint8_t* outNal,
++                                 size_t outCap, size_t* outLen, mrSpsVuiInfo* info)
++{
++	if (!inNal || inLen < 5 || inLen > 500 || (inNal[0] & 0x1Fu) != 7u)
++		return 0;
++	if (rewrite && (!outNal || !outLen))
++		return 0;
++
++	uint8_t inRbsp[512];
++	size_t inRbspLen = 0;
++	if (!mr_sps_unescape(inNal, inLen, inRbsp, sizeof(inRbsp), &inRbspLen) || inRbspLen < 4)
++		return 0;
++
++	uint8_t outRbsp[512];
++	mrSpsBitReader r = { .data = inRbsp, .bitLen = inRbspLen * 8u, .bitPos = 0 };
++	mrSpsBitWriter wStorage = { .data = outRbsp, .byteCap = sizeof(outRbsp), .bitPos = 0 };
++	mrSpsBitWriter* w = rewrite ? &wStorage : NULL;
++
++	mrSpsVuiInfo parsed;
++	memset(&parsed, 0, sizeof(parsed));
++
++	uint32_t profileIdc = 0;
++	uint32_t levelIdc = 0;
++	uint32_t tmp = 0;
++	if (!mr_sps_copy_u(&r, w, 8, &profileIdc) || !mr_sps_copy_u(&r, w, 8, &tmp) ||
++	    !mr_sps_copy_u(&r, w, 8, &levelIdc) || !mr_sps_copy_ue(&r, w, &tmp))
++		return 0;
++	parsed.profileIdc = profileIdc;
++	parsed.levelIdc = levelIdc;
++
++	if (mr_sps_is_high_profile(profileIdc))
++	{
++		uint32_t chroma = 0;
++		uint32_t scalingPresent = 0;
++		if (!mr_sps_copy_ue(&r, w, &chroma) || chroma > 3)
++			return 0;
++		if (chroma == 3 && !mr_sps_copy_u(&r, w, 1, &tmp))
++			return 0;
++		if (!mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++		    !mr_sps_copy_u(&r, w, 1, &tmp) || !mr_sps_copy_u(&r, w, 1, &scalingPresent))
++			return 0;
++		if (scalingPresent)
++		{
++			const unsigned nLists = (chroma != 3) ? 8u : 12u;
++			for (unsigned i = 0; i < nLists; i++)
++			{
++				uint32_t listPresent = 0;
++				if (!mr_sps_copy_u(&r, w, 1, &listPresent))
++					return 0;
++				if (listPresent)
++				{
++					const unsigned sz = (i < 6u) ? 16u : 64u;
++					int lastScale = 8;
++					int nextScale = 8;
++					for (unsigned j = 0; j < sz; j++)
++					{
++						if (nextScale != 0)
++						{
++							uint32_t code = 0;
++							if (!mr_sps_copy_ue(&r, w, &code))
++								return 0;
++							const int delta = (int)mr_sps_code_to_se(code);
++							nextScale = ((lastScale + delta) % 256 + 256) % 256;
++						}
++						lastScale = (nextScale == 0) ? lastScale : nextScale;
++					}
++				}
++			}
++		}
++	}
++
++	uint32_t pocType = 0;
++	if (!mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &pocType))
++		return 0;
++	if (pocType == 0)
++	{
++		if (!mr_sps_copy_ue(&r, w, &tmp))
++			return 0;
++	}
++	else if (pocType == 1)
++	{
++		uint32_t cycleLen = 0;
++		if (!mr_sps_copy_u(&r, w, 1, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++		    !mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &cycleLen) || cycleLen > 255)
++			return 0;
++		for (uint32_t i = 0; i < cycleLen; i++)
++		{
++			if (!mr_sps_copy_ue(&r, w, &tmp))
++				return 0;
++		}
++	}
++	else if (pocType > 2)
++		return 0;
++
++	uint32_t maxNumRefFrames = 0;
++	uint32_t frameMbsOnly = 0;
++	uint32_t cropping = 0;
++	if (!mr_sps_copy_ue(&r, w, &maxNumRefFrames) || !mr_sps_copy_u(&r, w, 1, &tmp) ||
++	    !mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++	    !mr_sps_copy_u(&r, w, 1, &frameMbsOnly))
++		return 0;
++	parsed.maxNumRefFrames = maxNumRefFrames;
++
++	if (!frameMbsOnly && !mr_sps_copy_u(&r, w, 1, &tmp))
++		return 0;
++	if (!mr_sps_copy_u(&r, w, 1, &tmp) || !mr_sps_copy_u(&r, w, 1, &cropping))
++		return 0;
++	if (cropping)
++	{
++		if (!mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++		    !mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp))
++			return 0;
++	}
++
++	uint32_t vuiPresent = 0;
++	if (!mr_sps_read_u(&r, 1, &vuiPresent))
++		return 0;
++	parsed.vuiPresent = (int)vuiPresent;
++
++	const uint32_t targetDpb = maxNumRefFrames > 1u ? maxNumRefFrames : 1u;
++	if (w && !mr_sps_write_u(w, 1, 1))
++		return 0;
++
++	if (!vuiPresent)
++	{
++		if (w)
++		{
++			/* aspect_ratio..pic_struct (8 flags = 0), bitstream_restriction_flag = 1 */
++			if (!mr_sps_write_u(w, 8, 0) || !mr_sps_write_u(w, 1, 1) ||
++			    !mr_sps_write_u(w, 1, 1) ||  /* motion_vectors_over_pic_boundaries_flag */
++			    !mr_sps_write_ue(w, 0) ||    /* max_bytes_per_pic_denom */
++			    !mr_sps_write_ue(w, 0) ||    /* max_bits_per_mb_denom */
++			    !mr_sps_write_ue(w, 16) ||   /* log2_max_mv_length_horizontal */
++			    !mr_sps_write_ue(w, 16) ||   /* log2_max_mv_length_vertical */
++			    !mr_sps_write_ue(w, 0) ||    /* max_num_reorder_frames = 0 */
++			    !mr_sps_write_ue(w, targetDpb))
++				return 0;
++		}
++	}
++	else
++	{
++		uint32_t flag = 0;
++		/* aspect_ratio_info_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &flag))
++			return 0;
++		if (flag)
++		{
++			uint32_t idc = 0;
++			if (!mr_sps_copy_u(&r, w, 8, &idc))
++				return 0;
++			if (idc == 255u)
++			{
++				if (!mr_sps_copy_u(&r, w, 16, &tmp) || !mr_sps_copy_u(&r, w, 16, &tmp))
++					return 0;
++			}
++		}
++		/* overscan_info_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &flag))
++			return 0;
++		if (flag && !mr_sps_copy_u(&r, w, 1, &tmp))
++			return 0;
++		/* video_signal_type_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &flag))
++			return 0;
++		if (flag)
++		{
++			uint32_t fullRange = 0;
++			uint32_t colourDesc = 0;
++			parsed.videoSignalPresent = 1;
++			if (!mr_sps_copy_u(&r, w, 3, &tmp) || !mr_sps_copy_u(&r, w, 1, &fullRange) ||
++			    !mr_sps_copy_u(&r, w, 1, &colourDesc))
++				return 0;
++			parsed.videoFullRange = (int)fullRange;
++			if (colourDesc)
++			{
++				if (!mr_sps_copy_u(&r, w, 8, &tmp) || !mr_sps_copy_u(&r, w, 8, &tmp) ||
++				    !mr_sps_copy_u(&r, w, 8, &tmp))
++					return 0;
++			}
++		}
++		/* chroma_loc_info_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &flag))
++			return 0;
++		if (flag && (!mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp)))
++			return 0;
++		/* timing_info_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &flag))
++			return 0;
++		if (flag)
++		{
++			if (!mr_sps_copy_u(&r, w, 32, &tmp) || !mr_sps_copy_u(&r, w, 32, &tmp) ||
++			    !mr_sps_copy_u(&r, w, 1, &tmp))
++				return 0;
++		}
++		/* nal_hrd_parameters_present_flag & vcl_hrd_parameters_present_flag */
++		uint32_t nalHrd = 0;
++		uint32_t vclHrd = 0;
++		if (!mr_sps_copy_u(&r, w, 1, &nalHrd))
++			return 0;
++		if (nalHrd && !mr_sps_copy_hrd(&r, w))
++			return 0;
++		if (!mr_sps_copy_u(&r, w, 1, &vclHrd))
++			return 0;
++		if (vclHrd && !mr_sps_copy_hrd(&r, w))
++			return 0;
++		if ((nalHrd || vclHrd) && !mr_sps_copy_u(&r, w, 1, &tmp))
++			return 0;
++		/* pic_struct_present_flag */
++		if (!mr_sps_copy_u(&r, w, 1, &tmp))
++			return 0;
++		/* bitstream_restriction_flag */
++		uint32_t brPresent = 0;
++		if (!mr_sps_read_u(&r, 1, &brPresent))
++			return 0;
++		parsed.bitstreamRestrictionPresent = (int)brPresent;
++		if (w && !mr_sps_write_u(w, 1, 1))
++			return 0;
++		if (brPresent)
++		{
++			if (!mr_sps_copy_u(&r, w, 1, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++			    !mr_sps_copy_ue(&r, w, &tmp) || !mr_sps_copy_ue(&r, w, &tmp) ||
++			    !mr_sps_copy_ue(&r, w, &tmp) ||
++			    !mr_sps_read_ue(&r, &parsed.maxNumReorderFrames) ||
++			    !mr_sps_read_ue(&r, &parsed.maxDecFrameBuffering))
++				return 0;
++			if (w && (!mr_sps_write_ue(w, 0) || !mr_sps_write_ue(w, targetDpb)))
++				return 0;
++		}
++		else if (w)
++		{
++			if (!mr_sps_write_u(w, 1, 1) || !mr_sps_write_ue(w, 0) || !mr_sps_write_ue(w, 0) ||
++			    !mr_sps_write_ue(w, 16) || !mr_sps_write_ue(w, 16) || !mr_sps_write_ue(w, 0) ||
++			    !mr_sps_write_ue(w, targetDpb))
++				return 0;
++		}
++	}
++
++	if (info)
++		*info = parsed;
++	if (!rewrite)
++		return 1;
++
++	/* rbsp_trailing_bits */
++	if (!mr_sps_write_u(w, 1, 1))
++		return 0;
++	while (w->bitPos & 7u)
++	{
++		if (!mr_sps_write_u(w, 1, 0))
++			return 0;
++	}
++	return mr_sps_escape(inNal[0], outRbsp, w->bitPos >> 3, outNal, outCap, outLen);
++}
++
++static inline int mr_h264_rewrite_sps_low_latency(const uint8_t* inNal, size_t inLen,
++                                                  uint8_t* outNal, size_t outCap, size_t* outLen)
++{
++	return mr_sps_process(inNal, inLen, 1, outNal, outCap, outLen, NULL);
++}
++
++static inline int mr_h264_parse_sps_vui(const uint8_t* inNal, size_t inLen, mrSpsVuiInfo* info)
++{
++	return mr_sps_process(inNal, inLen, 0, NULL, 0, NULL, info);
++}
++
++#endif
+diff --git a/libfreerdp/codec/h264_videotoolbox.m b/libfreerdp/codec/h264_videotoolbox.m
+index c5728d3..d884302 100644
+--- a/libfreerdp/codec/h264_videotoolbox.m
++++ b/libfreerdp/codec/h264_videotoolbox.m
+@@ -28,6 +28,7 @@
+ #include <freerdp/log.h>
+ 
+ #include "h264.h"
++#include "h264_sps_vui.h"
+ 
+ typedef struct
+ {
+@@ -633,6 +634,15 @@ static BOOL videotoolbox_encoder_append_nal(H264_CONTEXT_VT_ENCODER *enc, const
+                                             size_t size)
+ {
+ 	static const BYTE startCode[] = { 0x00, 0x00, 0x00, 0x01 };
++	const uint8_t *src = nal;
++	uint8_t rewritten[640];
++	size_t rewrittenLen = 0;
++	if ((size >= 5) && ((src[0] & 0x1Fu) == 7u) &&
++	    mr_h264_rewrite_sps_low_latency(src, size, rewritten, sizeof(rewritten), &rewrittenLen))
++	{
++		nal = rewritten;
++		size = rewrittenLen;
++	}
+ 	return videotoolbox_encoder_append(enc, startCode, sizeof(startCode)) &&
+ 	       videotoolbox_encoder_append(enc, nal, size);
+ }
+@@ -842,6 +852,32 @@ static BOOL videotoolbox_encoder_set_qp(H264_CONTEXT_VT_ENCODER *enc, UINT32 qp)
+ 	                                      1.0f - (1.0f * (float)value / 51.0f), "Quality");
+ }
+ 
++static void videotoolbox_encoder_set_data_rate_limits(H264_CONTEXT_VT_ENCODER *enc, UINT32 bitRate)
++{
++	/* Pair AverageBitRate with a 1-second DataRateLimits cap (~1.2x avg) so
++	 * scene cuts and full-screen scrolling do not spike past tight links. */
++	const int64_t bytesPerSec = MAX((int64_t)(((uint64_t)bitRate * 6u) / 40u), 16384);
++	const double windowSec = 1.0;
++	CFNumberRef limit = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &bytesPerSec);
++	CFNumberRef duration = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &windowSec);
++	if (limit && duration)
++	{
++		const void *values[] = { limit, duration };
++		CFArrayRef array =
++		    CFArrayCreate(kCFAllocatorDefault, values, 2, &kCFTypeArrayCallBacks);
++		if (array)
++		{
++			(void)videotoolbox_encoder_set(enc, kVTCompressionPropertyKey_DataRateLimits, array,
++			                               "DataRateLimits");
++			CFRelease(array);
++		}
++	}
++	if (limit)
++		CFRelease(limit);
++	if (duration)
++		CFRelease(duration);
++}
++
+ WINPR_ATTR_NODISCARD
+ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCODER *enc,
+                                         UINT32 width, UINT32 height, UINT32 frameRate,
+@@ -898,7 +934,9 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+ 	/* Baseline, as OpenH264 sends: every RDP client decodes it */
+ 	(void)videotoolbox_encoder_set(enc, kVTCompressionPropertyKey_ProfileLevel,
+ 	                               kVTProfileLevel_H264_Baseline_AutoLevel, "ProfileLevel");
+-	(void)videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_MaxKeyFrameInterval, 30,
++	/* Lossless TCP transport: avoid periodic IDR spikes. A new session starts
++	 * with a keyframe on connect, resize, or frame-rate mode switch. */
++	(void)videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_MaxKeyFrameInterval, 0,
+ 	                                   "MaxKeyFrameInterval");
+ 	(void)videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_ExpectedFrameRate,
+ 	                                   (int32_t)frameRate, "ExpectedFrameRate");
+@@ -914,6 +952,7 @@ static BOOL videotoolbox_encoder_create(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+ 			if (!videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_AverageBitRate,
+ 			                                  (int32_t)MIN(bitRate, INT32_MAX), "AverageBitRate"))
+ 				goto fail;
++			videotoolbox_encoder_set_data_rate_limits(enc, bitRate);
+ 			break;
+ 	}
+ 
+@@ -992,6 +1031,7 @@ static BOOL videotoolbox_encoder_update(H264_CONTEXT *h264, H264_CONTEXT_VT_ENCO
+ 		if (!videotoolbox_encoder_set_int(enc, kVTCompressionPropertyKey_AverageBitRate,
+ 		                                  (int32_t)MIN(bitRate, INT32_MAX), "AverageBitRate"))
+ 			return videotoolbox_encoder_create(h264, enc, width, height, frameRate, bitRate);
++		videotoolbox_encoder_set_data_rate_limits(enc, bitRate);
+ 		enc->bitRate = bitRate;
+ 	}
+ 	if ((h264->RateControlMode == H264_RATECONTROL_CQP) && (enc->qp != h264->QP))
+diff --git a/server/shadow/Mac/mac_shadow.c b/server/shadow/Mac/mac_shadow.c
+index ec9e691..0878300 100644
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -52,8 +52,26 @@
+ 
+ #define TAG SERVER_TAG("shadow.mac")
+ 
+-/* Frames per second asked from ScreenCaptureKit at most */
+-#define MAC_SHADOW_FPS 30
++/* Frames per second asked from ScreenCaptureKit at most (event-driven: 0 when idle). */
++#define MAC_SHADOW_FPS 60
++
++static UINT32 (*mac_shadow_max_fps_provider)(void);
++
++FREERDP_API void mac_shadow_set_max_fps_provider(UINT32 (*provider)(void));
++void mac_shadow_set_max_fps_provider(UINT32 (*provider)(void))
++{
++	mac_shadow_max_fps_provider = provider;
++}
++
++static UINT32 mac_shadow_min_frame_interval_ms(void)
++{
++	if (!mac_shadow_max_fps_provider)
++		return 0;
++	const UINT32 cap = mac_shadow_max_fps_provider();
++	if (cap == 0 || cap >= MAC_SHADOW_FPS)
++		return 0;
++	return 1000u / cap;
++}
+ /* how often to look for the display again after the stream ended */
+ #define MAC_SHADOW_RESTART_MS 1000
+ /* how often to look at the displays: a reconfiguration callback only reaches a
+@@ -1348,6 +1366,7 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		                mac->lostEvent, mac->clientEvent };
+ 	BOOL lost = FALSE;
+ 	BOOL captureRequested = FALSE;
++	BOOL framePending = FALSE;
+ 	UINT64 restart = 0;
+ 
+ 	while (1)
+@@ -1358,6 +1377,17 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		DWORD timeout = clients ? MAC_SHADOW_CURSOR_MS : MAC_SHADOW_DISPLAYS_MS;
+ 		if (lost)
+ 			timeout = MIN(timeout, MAC_SHADOW_RESTART_MS);
++		if (clients && framePending)
++		{
++			const UINT32 minInterval = mac_shadow_min_frame_interval_ms();
++			const UINT64 cur = GetTickCount64();
++			if (minInterval == 0 || mac->lastCapturePublishTick == 0 ||
++			    cur - mac->lastCapturePublishTick >= minInterval)
++				timeout = 0;
++			else
++				timeout = MIN(timeout,
++				              (DWORD)(minInterval - (cur - mac->lastCapturePublishTick)));
++		}
+ 
+ 		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, timeout);
+ 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
+@@ -1401,6 +1431,8 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 				if (mac->audioStream)
+ 					Stream_SetPosition(mac->audioStream, 0); /* no stale partial PCM on reconnect */
+ 				lost = FALSE;
++				framePending = FALSE;
++				mac->lastCapturePublishTick = 0;
+ 				(void)ResetEvent(mac->lostEvent);
+ 				WLog_INFO(TAG, "screen and audio capture stopped (no clients)");
+ 			}
+@@ -1440,7 +1472,18 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
+ 		{
+ 			(void)ResetEvent(mac->frameEvent);
+ 			if (connected)
++				framePending = TRUE;
++		}
++		if (connected && framePending)
++		{
++			const UINT32 minInterval = mac_shadow_min_frame_interval_ms();
++			if (minInterval == 0 || mac->lastCapturePublishTick == 0 ||
++			    now - mac->lastCapturePublishTick >= minInterval)
++			{
++				framePending = FALSE;
++				mac->lastCapturePublishTick = now;
+ 				mac_shadow_send_frame(mac);
++			}
+ 		}
+ 	}
+ 
+diff --git a/server/shadow/Mac/mac_shadow.h b/server/shadow/Mac/mac_shadow.h
+index c9634e9..0f5b0a8 100644
+--- a/server/shadow/Mac/mac_shadow.h
++++ b/server/shadow/Mac/mac_shadow.h
+@@ -78,6 +78,7 @@ struct mac_shadow_subsystem
+ 	UINT64 scaledDiffTiles;
+ 	UINT64 scaledDiffFull;
+ 	UINT64 scaledDiffLastLog;
++	UINT64 lastCapturePublishTick;
+ 
+ 	/* input state: mouse buttons down, modifiers down, the last click */
+ 	UINT32 buttonsDown;
+diff --git a/server/shadow/shadow_client.c b/server/shadow/shadow_client.c
+index f1f941e..2fd99ef 100644
+--- a/server/shadow/shadow_client.c
++++ b/server/shadow/shadow_client.c
+@@ -36,12 +36,66 @@
+ 
++#include <errno.h>
++#include <stdlib.h>
+ #include "shadow.h"
+ #include "shadow_rfx_dirty.h"
++#include "shadow_startup_pacing.h"
+ #include <freerdp/server/shadow_color_depth_compat.h>
+ 
+ #define TAG CLIENT_TAG("shadow")
+ 
+ #define SHADOW_CLIENT_MAX_INVALID_RECTS 256
+ 
++static BOOL (*stream_profile_provider)(const rdpShadowClient*, ShadowStreamProfile*);
++static void (*stream_stats_observer)(const rdpShadowClient*, const ShadowStreamStats*);
++
++FREERDP_API void shadow_client_set_stream_profile_provider(
++    BOOL (*provider)(const rdpShadowClient*, ShadowStreamProfile*));
++void shadow_client_set_stream_profile_provider(
++    BOOL (*provider)(const rdpShadowClient*, ShadowStreamProfile*))
++{
++	stream_profile_provider = provider;
++}
++
++FREERDP_API void shadow_client_set_stream_stats_observer(
++    void (*observer)(const rdpShadowClient*, const ShadowStreamStats*));
++void shadow_client_set_stream_stats_observer(
++    void (*observer)(const rdpShadowClient*, const ShadowStreamStats*))
++{
++	stream_stats_observer = observer;
++}
++
++static void shadow_client_get_stream_profile(const rdpShadowClient* client,
++                                             ShadowStreamProfile* out)
++{
++	WINPR_ASSERT(client);
++	WINPR_ASSERT(out);
++	if (stream_profile_provider && stream_profile_provider(client, out))
++		return;
++	out->bitrate = client->server->h264BitRate;
++	out->maxFps = client->server->h264FrameRate ? client->server->h264FrameRate : 60u;
++	out->maxInFlight = client->encoder->maxInFlight;
++	out->pacerBytesPerSec = 0;
++	out->pacerBurstBytes = 0;
++	out->refineDelayMs = 250u;
++	out->refineFrames = 1u;
++}
++
++/* Optional A/B override for real mstsc validation (0..10 refine frames). */
++static UINT32 shadow_client_refine_frames_count(UINT32 configured)
++{
++	// NOLINTNEXTLINE(concurrency-mt-unsafe)
++	const char* env = getenv("MACREMOTE_AVC_REFINE_FRAMES");
++	if (env && *env)
++	{
++		char* end = nullptr;
++		errno = 0;
++		const unsigned long value = strtoul(env, &end, 10);
++		if (errno == 0 && end && *end == '\0' && value <= 10)
++			return (UINT32)value;
++	}
++	return configured;
++}
++
+ typedef struct
+ {
+ 	BOOL gfxOpened;
+@@ -881,8 +933,10 @@ static inline void shadow_client_common_frame_acknowledge(rdpShadowClient* clien
+ 	 */
+ 	WINPR_ASSERT(client);
+ 	WINPR_ASSERT(client->encoder);
++	const UINT64 now = GetTickCount64();
++	shadow_rtt_record_ack(&client->encoder->rtt, frameId, now);
+ 	client->encoder->lastAckframeId = frameId;
+-	client->encoder->lastAckTick = GetTickCount64();
++	client->encoder->lastAckTick = now;
+ 	client->encoder->everAcked = TRUE;
+ }
+ 
+@@ -911,6 +965,9 @@ shadow_client_rdpgfx_frame_acknowledge(RdpgfxServerContext* context,
+ 	WINPR_ASSERT(frameAcknowledge);
+ 
+ 	client = (rdpShadowClient*)context->custom;
++	if (!client->encoder->everAcked)
++		WLog_INFO(TAG, "MacRemote first GFX frame ACK=%" PRIu32 " queueDepth=%" PRIu32,
++		          frameAcknowledge->frameId, frameAcknowledge->queueDepth);
+ 	shadow_client_common_frame_acknowledge(client, frameAcknowledge->frameId);
+ 
+ 	WINPR_ASSERT(client);
+@@ -1457,6 +1514,50 @@ static BOOL shadow_client_send_avc444(rdpShadowClient* client, const BYTE* pSrcD
+ 	return TRUE;
+ }
+ 
++WINPR_ATTR_NODISCARD
++static BOOL shadow_client_apply_avc420_profile(rdpShadowClient* client,
++                                               ShadowStreamProfile* profile)
++{
++	shadow_client_get_stream_profile(client, profile);
++	H264_CONTEXT* h264 = client->encoder->h264;
++	const UINT32 targetRate = profile->bitrate ? profile->bitrate : client->server->h264BitRate;
++	const UINT32 targetFps = profile->maxFps ? profile->maxFps : 60u;
++
++	BOOL changed = FALSE;
++	if (h264_context_get_option(h264, H264_CONTEXT_OPTION_BITRATE) != targetRate)
++	{
++		if (!h264_context_set_option(h264, H264_CONTEXT_OPTION_BITRATE, targetRate))
++			return FALSE;
++		changed = TRUE;
++	}
++	if (h264_context_get_option(h264, H264_CONTEXT_OPTION_FRAMERATE) != targetFps)
++	{
++		if (!h264_context_set_option(h264, H264_CONTEXT_OPTION_FRAMERATE, targetFps))
++			return FALSE;
++		changed = TRUE;
++	}
++	if (changed)
++		WLog_INFO(TAG, "MacRemote AVC420 profile bitrate=%" PRIu32 " maxFps=%" PRIu32
++		          " pacer=%" PRIu32 " B/s",
++		          targetRate, targetFps, profile->pacerBytesPerSec);
++	shadow_pacer_configure(&client->encoder->pacer, profile->pacerBytesPerSec,
++	                       profile->pacerBurstBytes, GetTickCount64());
++	return TRUE;
++}
++
++static UINT shadow_client_emit_avc420(rdpShadowClient* client, RDPGFX_SURFACE_COMMAND* command,
++                                      const RDPGFX_START_FRAME_PDU* start,
++                                      const RDPGFX_END_FRAME_PDU* end,
++                                      RDPGFX_AVC420_BITMAP_STREAM* frame)
++{
++	command->codecId = RDPGFX_CODECID_AVC420;
++	command->extra = frame;
++	UINT error = CHANNEL_RC_OK;
++	IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, command, start, end);
++	command->extra = nullptr;
++	return error;
++}
++
+ WINPR_ATTR_NODISCARD
+ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcData,
+                                       UINT32 nSrcStep, UINT32 SrcFormat, UINT16 nWidth,
+@@ -1473,6 +1574,7 @@ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcD
+ 	INT32 rc = 0;
+ 	RDPGFX_AVC420_BITMAP_STREAM avc420 = WINPR_C_ARRAY_INIT;
+ 	RECTANGLE_16 regionRect;
++	ShadowStreamProfile profile = WINPR_C_ARRAY_INIT;
+ 
+ 	if (shadow_encoder_prepare(encoder, FREERDP_CODEC_AVC420) < 0)
+ 	{
+@@ -1480,6 +1582,9 @@ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcD
+ 		return FALSE;
+ 	}
+ 
++	if (!shadow_client_apply_avc420_profile(client, &profile))
++		return FALSE;
++
+ 	WINPR_ASSERT(cmd->left <= UINT16_MAX);
+ 	WINPR_ASSERT(cmd->top <= UINT16_MAX);
+ 	WINPR_ASSERT(cmd->right <= UINT16_MAX);
+@@ -1496,22 +1601,54 @@ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcD
+ 		return FALSE;
+ 	}
+ 
+-	/* rc > 0 means new data */
+-	if (rc > 0)
++	/* Unchanged pictures do not produce an ACK; reclaim their frame id. */
++	if (rc == 0)
+ 	{
+-		cmd->codecId = RDPGFX_CODECID_AVC420;
+-		cmd->extra = (void*)&avc420;
+-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
+-		          cmdend);
+-		cmd->extra = nullptr;
++		encoder->frameId--;
++		free_h264_metablock(&avc420.meta);
++		return TRUE;
+ 	}
++
++	/* Present the complete reconstructed picture so stale tiles never survive moves. */
++	if (avc420.meta.numRegionRects > 0)
++	{
++		avc420.meta.regionRects[0] = (RECTANGLE_16){ 0, 0, nWidth, nHeight };
++		avc420.meta.numRegionRects = 1;
++	}
++
++	if (cmdstart->frameId <= 3)
++		WLog_INFO(TAG, "MacRemote AVC420 frame=%" PRIu32 " bytes=%" PRIu32, cmdstart->frameId,
++		          avc420.length);
++
++	const UINT64 now = GetTickCount64();
++	shadow_rtt_record_send(&encoder->rtt, cmdstart->frameId, now);
++	error = shadow_client_emit_avc420(client, cmd, cmdstart, cmdend, &avc420);
+ 	free_h264_metablock(&avc420.meta);
+ 
+-	if (error)
++	if (error != CHANNEL_RC_OK)
+ 	{
+ 		WLog_ERR(TAG, "SurfaceFrameCommand failed with error %" PRIu32 "", error);
+ 		return FALSE;
+ 	}
++
++	encoder->lastFrameSentTick = now;
++	shadow_pacer_consume(&encoder->pacer, avc420.length, now);
++	encoder->statsCodec = "h264";
++	encoder->statsVideoBytes += avc420.length;
++	encoder->statsLogVideoBytes += avc420.length;
++	encoder->statsVideoFrames++;
++	encoder->statsLogVideoFrames++;
++
++	const UINT32 refineCount = shadow_client_refine_frames_count(profile.refineFrames);
++	if (refineCount > 0)
++	{
++		encoder->avcDrainRemaining = refineCount;
++		encoder->avcDrainDeadline = now + (profile.refineDelayMs ? profile.refineDelayMs : 250u);
++	}
++	else
++	{
++		encoder->avcDrainRemaining = 0;
++	}
+ 	return TRUE;
+ }
+ 
+@@ -2140,6 +2277,14 @@ static BOOL shadow_client_send_surface_bits(rdpShadowClient* client, BYTE* pSrcD
+ 		{
+ 			WLog_ERR(TAG, "Send surface bits(NSCodec) failed");
+ 		}
++		else
++		{
++			encoder->statsCodec = "surfaceBits";
++			encoder->statsVideoBytes += cmd.bmp.bitmapDataLength;
++			encoder->statsLogVideoBytes += cmd.bmp.bitmapDataLength;
++			encoder->statsVideoFrames++;
++			encoder->statsLogVideoFrames++;
++		}
+ 	}
+ 
+ 	return ret;
+@@ -2356,6 +2501,14 @@ static BOOL shadow_client_send_bitmap_update(rdpShadowClient* client, BYTE* pSrc
+ 	}
+ 
+ out:
++	if (ret)
++	{
++		encoder->statsCodec = "bitmap";
++		encoder->statsVideoBytes += totalBitmapSize;
++		encoder->statsLogVideoBytes += totalBitmapSize;
++		encoder->statsVideoFrames++;
++		encoder->statsLogVideoFrames++;
++	}
+ 	free(bitmapData);
+ 	return ret;
+ }
+@@ -2801,48 +2954,115 @@ static int shadow_client_subsystem_process_message(rdpShadowClient* client, wMes
+  * one that stops reading for longer than TcpAckTimeout (9 s) is disconnected by TCP anyway. */
+ #define SHADOW_GFX_ACK_STALL_MS 2000u
+ 
+-/* GFX flow control: TRUE when this round's frame must wait. The server sent every damaged frame
+- * however far the client was behind, and on a slow link the frames queued up in TCP for seconds:
+- * the client showed old pictures, the sound and the pointer came late. Like xrdp, at most
+- * maxInFlight frames go out without an acknowledgement; the damage of the rounds in between
+- * waits in the client's region and goes out in one frame when an acknowledgement comes. */
++static UINT32 shadow_client_inflight_limit(const rdpShadowClient* client,
++                                           const ShadowStreamProfile* profile)
++{
++	WINPR_ASSERT(client);
++	WINPR_ASSERT(client->encoder);
++	WINPR_ASSERT(profile);
++	if (client->encoder->maxInFlight == 0)
++		return 0;
++	const UINT32 configured =
++	    profile->maxInFlight ? profile->maxInFlight : client->encoder->maxInFlight;
++	return shadow_startup_ack_budget(configured, client->encoder->everAcked);
++}
++
++/* Returns 0 when this round's frame may be encoded and sent now, or >0 ms to
++ * wait while coalescing damage in the client's invalid region. */
+ WINPR_ATTR_NODISCARD
+-static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GFX_STATUS* status)
++static UINT32 shadow_client_gfx_wait_ms(rdpShadowClient* client, const SHADOW_GFX_STATUS* status,
++                                        UINT64 now)
+ {
+ 	WINPR_ASSERT(client);
+ 	WINPR_ASSERT(status);
+ 	rdpShadowEncoder* encoder = client->encoder;
+ 	WINPR_ASSERT(encoder);
+ 
+-	if ((encoder->maxInFlight == 0) || !status->gfxOpened || !client->areGfxCapsReady ||
++	if (!status->gfxOpened || !client->areGfxCapsReady ||
+ 	    !freerdp_settings_get_bool(client->context.settings, FreeRDP_SupportGraphicsPipeline))
+-		return FALSE;
++		return 0;
++
++	ShadowStreamProfile profile = WINPR_C_ARRAY_INIT;
++	shadow_client_get_stream_profile(client, &profile);
++	shadow_pacer_configure(&encoder->pacer, profile.pacerBytesPerSec, profile.pacerBurstBytes, now);
+ 
+ 	/* 0 when the client suspended its acknowledgements */
+ 	const UINT32 inFlight = shadow_encoder_inflight_frames(encoder);
+ 	encoder->statsMaxInFlight = MAX(encoder->statsMaxInFlight, inFlight);
+-	if (inFlight < encoder->maxInFlight)
+-		return FALSE;
+-
+-	const UINT64 now = GetTickCount64();
+-	if (!encoder->everAcked && (now - encoder->lastAckTick >= SHADOW_GFX_ACK_STALL_MS))
++	const UINT32 limit = shadow_client_inflight_limit(client, &profile);
++	if (limit > 0 && inFlight >= limit)
+ 	{
+-		if (!encoder->warnedNoAck)
++		if (!encoder->everAcked && (now - encoder->lastAckTick >= SHADOW_GFX_ACK_STALL_MS))
+ 		{
+-			encoder->warnedNoAck = TRUE;
+-			WLog_WARN(TAG,
+-			          "gfx: the client acknowledges no frame, one frame every %u ms (%" PRIu32
+-			          " in flight)",
+-			          SHADOW_GFX_ACK_STALL_MS, inFlight);
++			if (!encoder->warnedNoAck)
++			{
++				encoder->warnedNoAck = TRUE;
++				WLog_WARN(TAG,
++				          "gfx: the client acknowledges no frame, one frame every %u ms (%" PRIu32
++				          " in flight)",
++				          SHADOW_GFX_ACK_STALL_MS, inFlight);
++			}
++			encoder->lastAckTick = now;
++			return 0;
+ 		}
+-		/* the next one after another stall period */
+-		encoder->lastAckTick = now;
++		return 100u;
++	}
++
++	const UINT32 fpsWait = shadow_fps_wait_ms(encoder->lastFrameSentTick, profile.maxFps, now);
++	const UINT32 pacerWait = shadow_pacer_wait_ms(&encoder->pacer, now);
++	return MAX(fpsWait, pacerWait);
++}
++
++/* Send an optional unchanged P picture after screen updates stop to sharpen
++ * still text (and allow A/B override via MACREMOTE_AVC_REFINE_FRAMES). */
++WINPR_ATTR_NODISCARD
++static BOOL shadow_client_flush_avc420(rdpShadowClient* client, UINT32 count)
++{
++	rdpShadowEncoder* encoder = client->encoder;
++	const UINT32 width =
++	    freerdp_settings_get_uint32(client->context.settings, FreeRDP_DesktopWidth);
++	const UINT32 height =
++	    freerdp_settings_get_uint32(client->context.settings, FreeRDP_DesktopHeight);
++	ShadowStreamProfile profile = WINPR_C_ARRAY_INIT;
++	if (!shadow_client_apply_avc420_profile(client, &profile))
+ 		return FALSE;
++
++	RDPGFX_SURFACE_COMMAND command = WINPR_C_ARRAY_INIT;
++	command.surfaceId = client->surfaceId;
++	command.format = PIXEL_FORMAT_BGRX32;
++	command.right = command.width = width;
++	command.bottom = command.height = height;
++
++	for (UINT32 n = 0; n < count; n++)
++	{
++		RDPGFX_AVC420_BITMAP_STREAM frame = WINPR_C_ARRAY_INIT;
++		if (avc420_repeat(encoder->h264, width, height, &frame.data, &frame.length, &frame.meta) <
++		    0)
++			return FALSE;
++
++		RDPGFX_START_FRAME_PDU start = WINPR_C_ARRAY_INIT;
++		RDPGFX_END_FRAME_PDU end = WINPR_C_ARRAY_INIT;
++		start.frameId = end.frameId = shadow_encoder_create_frame_id(encoder);
++		SYSTEMTIME tm = WINPR_C_ARRAY_INIT;
++		GetSystemTime(&tm);
++		start.timestamp = (UINT32)(tm.wHour << 22u | tm.wMinute << 16u | tm.wSecond << 10u |
++		                           tm.wMilliseconds);
++		const UINT64 now = GetTickCount64();
++		shadow_rtt_record_send(&encoder->rtt, start.frameId, now);
++		const UINT error = shadow_client_emit_avc420(client, &command, &start, &end, &frame);
++		free_h264_metablock(&frame.meta);
++		if (error != CHANNEL_RC_OK)
++			return FALSE;
++		shadow_pacer_consume(&encoder->pacer, frame.length, now);
++		encoder->statsVideoBytes += frame.length;
++		encoder->statsLogVideoBytes += frame.length;
++		encoder->statsRefineFrames++;
++		encoder->statsLogRefineFrames++;
+ 	}
+ 	return TRUE;
+ }
+ 
+-/* the 5 s line for the flow control, at debug level */
++/* 1 Hz session telemetry for the UI + 5 s diagnostic log summary. */
+ static void shadow_client_gfx_stats(rdpShadowClient* client)
+ {
+ 	WINPR_ASSERT(client);
+@@ -2850,16 +3070,74 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
+ 	WINPR_ASSERT(encoder);
+ 
+ 	const UINT64 now = GetTickCount64();
+-	if (now - encoder->statsLogged < 5000)
++	if (encoder->statsPublished == 0)
++	{
++		encoder->statsPublished = now;
++		encoder->statsLogged = now;
+ 		return;
+-	if (encoder->statsLogged != 0)
+-		WLog_DBG(TAG,
+-		         "gfx: at most %" PRIu32 " of %" PRIu32 " frames in flight, %" PRIu64
+-		         " round(s) waited",
+-		         encoder->statsMaxInFlight, encoder->maxInFlight, encoder->statsHeld);
+-	encoder->statsMaxInFlight = 0;
+-	encoder->statsHeld = 0;
+-	encoder->statsLogged = now;
++	}
++
++	const UINT64 elapsed = now - encoder->statsPublished;
++	if (elapsed >= 1000)
++	{
++		UINT32 rttP50 = 0;
++		UINT32 rttP95 = 0;
++		const int hasRtt = shadow_rtt_summarize(&encoder->rtt, &rttP50, &rttP95);
++		const UINT32 videoBps = (UINT32)((encoder->statsVideoBytes * 1000u) / elapsed);
++		const UINT32 fps =
++		    (UINT32)(((UINT64)encoder->statsVideoFrames * 1000u + elapsed / 2u) / elapsed);
++		if (stream_stats_observer)
++		{
++			ShadowStreamStats stats = WINPR_C_ARRAY_INIT;
++			stats.codec = encoder->statsCodec;
++			stats.colorDepth =
++			    freerdp_settings_get_uint32(client->context.settings, FreeRDP_ColorDepth);
++			stats.videoBytesPerSec = videoBps;
++			stats.videoFps = fps;
++			stats.refineFrames = encoder->statsRefineFrames;
++			stats.ackRttP50Ms = rttP50;
++			stats.ackRttP95Ms = rttP95;
++			stats.hasAckRtt = hasRtt;
++			stats.inFlightMax = encoder->statsMaxInFlight;
++			stream_stats_observer(client, &stats);
++		}
++		encoder->statsVideoBytes = 0;
++		encoder->statsVideoFrames = 0;
++		encoder->statsRefineFrames = 0;
++		encoder->statsPublished = now;
++
++		const UINT64 logElapsed = now - encoder->statsLogged;
++		if (logElapsed >= 5000)
++		{
++			if (encoder->statsLogVideoFrames > 0 || encoder->statsLogRefineFrames > 0 ||
++			    encoder->statsHeld > 0)
++			{
++				const double kbps = (double)encoder->statsLogVideoBytes / (double)logElapsed;
++				const double avgFps =
++				    (double)encoder->statsLogVideoFrames * 1000.0 / (double)logElapsed;
++				if (hasRtt)
++					WLog_INFO(TAG,
++					          "MacRemote stream: codec=%s video=%.1f KB/s fps=%.1f refine=%" PRIu32
++					          " ackRtt=%" PRIu32 "/%" PRIu32 "ms inFlight=%" PRIu32 " held=%" PRIu64,
++					          encoder->statsCodec ? encoder->statsCodec : "none", kbps, avgFps,
++					          encoder->statsLogRefineFrames, rttP50, rttP95,
++					          encoder->statsMaxInFlight, encoder->statsHeld);
++				else
++					WLog_INFO(TAG,
++					          "MacRemote stream: codec=%s video=%.1f KB/s fps=%.1f refine=%" PRIu32
++					          " ackRtt=N/A inFlight=%" PRIu32 " held=%" PRIu64,
++					          encoder->statsCodec ? encoder->statsCodec : "none", kbps, avgFps,
++					          encoder->statsLogRefineFrames, encoder->statsMaxInFlight,
++					          encoder->statsHeld);
++			}
++			encoder->statsMaxInFlight = 0;
++			encoder->statsHeld = 0;
++			encoder->statsLogVideoBytes = 0;
++			encoder->statsLogVideoFrames = 0;
++			encoder->statsLogRefineFrames = 0;
++			encoder->statsLogged = now;
++		}
++	}
+ }
+ 
+ WINPR_ATTR_NODISCARD
+@@ -2981,8 +3259,31 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
+ 			events[nCount++] = gfxevent;
+ #endif
+ 
+-		/* a frame that waits for an acknowledgement also goes out after a stall */
+-		const DWORD timeout = client->encoder->gfxHeld ? 100 : INFINITE;
++		/* Wake at exact pacing/refinement deadlines, or at 1 Hz for telemetry. */
++		DWORD timeout = client->activated ? 1000u : INFINITE;
++		if (client->encoder->avcDrainRemaining &&
++		    (!client->activated || client->suppressOutput || !gfxstatus.gfxSurfaceCreated))
++			client->encoder->avcDrainRemaining = 0;
++		if (client->encoder->gfxHeld || client->encoder->avcDrainRemaining)
++		{
++			const UINT64 now = GetTickCount64();
++			if (client->encoder->gfxHeld)
++			{
++				const UINT64 due = client->encoder->gfxResumeDeadline;
++				const DWORD rem =
++				    due ? ((due > now) ? WINPR_ASSERTING_INT_CAST(DWORD, MIN(due - now, UINT32_MAX))
++				                       : 0u)
++				        : 100u;
++				timeout = MIN(timeout, rem);
++			}
++			if (client->encoder->avcDrainRemaining)
++			{
++				const UINT64 due = client->encoder->avcDrainDeadline;
++				const DWORD rem =
++				    (due > now) ? WINPR_ASSERTING_INT_CAST(DWORD, MIN(due - now, UINT32_MAX)) : 0u;
++				timeout = MIN(timeout, rem);
++			}
++		}
+ 		status = WaitForMultipleObjects(nCount, events, FALSE, timeout);
+ 
+ 		if (status == WAIT_FAILED)
+@@ -3021,26 +3322,33 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
+ 						break;
+ 					}
+ 				}
+-				else if (shadow_client_gfx_must_wait(client, &gfxstatus))
++				else
+ 				{
+-					/* the client is behind: keep the damage for when it caught up */
+-					if (!shadow_client_no_surface_update(client, &gfxstatus))
++					const UINT64 now = GetTickCount64();
++					const UINT32 waitMs = shadow_client_gfx_wait_ms(client, &gfxstatus, now);
++					if (waitMs > 0)
+ 					{
+-						WLog_ERR(TAG, "Failed to handle surface update");
+-						break;
++						/* the client or bandwidth pacer is busy: keep the damage for when ready */
++						if (!shadow_client_no_surface_update(client, &gfxstatus))
++						{
++							WLog_ERR(TAG, "Failed to handle surface update");
++							break;
++						}
++						client->encoder->gfxHeld = TRUE;
++						client->encoder->gfxResumeDeadline = now + waitMs;
++						client->encoder->statsHeld++;
+ 					}
+-					client->encoder->gfxHeld = TRUE;
+-					client->encoder->statsHeld++;
+-				}
+-				else
+-				{
+-					/* Send frame */
+-					if (!shadow_client_send_surface_update(client, &gfxstatus))
++					else
+ 					{
+-						WLog_ERR(TAG, "Failed to send surface update");
+-						break;
++						/* Send frame */
++						if (!shadow_client_send_surface_update(client, &gfxstatus))
++						{
++							WLog_ERR(TAG, "Failed to send surface update");
++							break;
++						}
++						client->encoder->gfxHeld = FALSE;
++						client->encoder->gfxResumeDeadline = 0;
+ 					}
+-					client->encoder->gfxHeld = FALSE;
+ 				}
+ 			}
+ 			else
+@@ -3139,17 +3447,55 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
+ 		}
+ #endif
+ 
+-		/* an acknowledgement (or a stall) let the waiting damage go: one frame of the surface as
+-		 * it is now, not the frames that were skipped */
+-		if (client->encoder->gfxHeld && client->activated && !client->suppressOutput &&
+-		    !shadow_client_gfx_must_wait(client, &gfxstatus))
++		/* an acknowledgement, FPS slot, or pacer refill let the waiting damage go: one frame of the
++		 * surface as it is now, not the frames that were skipped */
++		if (client->encoder->gfxHeld && client->activated && !client->suppressOutput)
+ 		{
+-			if (!shadow_client_send_surface_update(client, &gfxstatus))
++			const UINT64 now = GetTickCount64();
++			const UINT32 waitMs = shadow_client_gfx_wait_ms(client, &gfxstatus, now);
++			if (waitMs == 0)
+ 			{
+-				WLog_ERR(TAG, "Failed to send surface update");
+-				goto fail;
++				if (!shadow_client_send_surface_update(client, &gfxstatus))
++				{
++					WLog_ERR(TAG, "Failed to send surface update");
++					goto fail;
++				}
++				client->encoder->gfxHeld = FALSE;
++				client->encoder->gfxResumeDeadline = 0;
++			}
++			else
++			{
++				client->encoder->gfxResumeDeadline = now + waitMs;
++			}
++		}
++		if (client->encoder->avcDrainRemaining && !client->encoder->gfxHeld && client->activated &&
++		    !client->suppressOutput && gfxstatus.gfxSurfaceCreated)
++		{
++			const UINT64 now = GetTickCount64();
++			if (now >= client->encoder->avcDrainDeadline)
++			{
++				rdpShadowEncoder* encoder = client->encoder;
++				ShadowStreamProfile profile = WINPR_C_ARRAY_INIT;
++				shadow_client_get_stream_profile(client, &profile);
++				shadow_pacer_configure(&encoder->pacer, profile.pacerBytesPerSec,
++				                       profile.pacerBurstBytes, now);
++				const UINT32 batch =
++				    shadow_startup_ack_drain_batch(encoder->avcDrainRemaining, encoder->everAcked);
++				const UINT32 limit = shadow_client_inflight_limit(client, &profile);
++				const UINT32 pacerWait = shadow_pacer_wait_ms(&encoder->pacer, now);
++				if ((limit && shadow_encoder_inflight_frames(encoder) + batch >= limit) ||
++				    pacerWait > 0)
++				{
++					encoder->avcDrainDeadline = now + MAX(50u, pacerWait);
++				}
++				else
++				{
++					if (!shadow_client_flush_avc420(client, batch))
++						goto fail;
++					encoder->avcDrainRemaining -= batch;
++					encoder->avcDrainDeadline = now + 50u;
++				}
+ 			}
+-			client->encoder->gfxHeld = FALSE;
+ 		}
+ 		if (client->activated)
+ 			shadow_client_gfx_stats(client);
+diff --git a/server/shadow/shadow_encoder.c b/server/shadow/shadow_encoder.c
+index e9c9aa8..6a24498 100644
+--- a/server/shadow/shadow_encoder.c
++++ b/server/shadow/shadow_encoder.c
+@@ -510,12 +510,18 @@ int shadow_encoder_reset(rdpShadowEncoder* encoder)
+ 	if (status < 0)
+ 		return -1;
+ 
+-	encoder->fps = 16;
+-	encoder->maxFps = 32;
++	encoder->fps = 30;
++	encoder->maxFps = 60;
+ 	encoder->frameId = 0;
+ 	encoder->lastAckframeId = 0;
+ 	encoder->lastAckTick = GetTickCount64();
+ 	encoder->gfxHeld = FALSE;
++	encoder->gfxResumeDeadline = 0;
++	encoder->lastFrameSentTick = 0;
++	encoder->avcDrainDeadline = 0;
++	encoder->avcDrainRemaining = 0;
++	memset(&encoder->pacer, 0, sizeof(encoder->pacer));
++	memset(&encoder->rtt, 0, sizeof(encoder->rtt));
+ 	encoder->frameAck = freerdp_settings_get_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled);
+ 	return 1;
+ }
+@@ -606,8 +612,8 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
+ 
+ 	encoder->client = client;
+ 	encoder->server = server;
+-	encoder->fps = 16;
+-	encoder->maxFps = 32;
++	encoder->fps = 30;
++	encoder->maxFps = 60;
+ 	encoder->lastAckTick = GetTickCount64();
+ 	{
+ 		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT; 0 turns the limit off */
+diff --git a/server/shadow/shadow_encoder.h b/server/shadow/shadow_encoder.h
+index c6f42b5..e2d70cb 100644
+--- a/server/shadow/shadow_encoder.h
++++ b/server/shadow/shadow_encoder.h
+@@ -27,6 +27,8 @@
+ 
+ #include <freerdp/server/shadow.h>
+ 
++#include "shadow_stream_control.h"
++
+ /* GFX frames a client may have unacknowledged before it gets no new one, like xrdp's
+  * XRDP_GFX_FRAMES_IN_FLIGHT=8; FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT overrides it */
+ #define SHADOW_GFX_FRAMES_IN_FLIGHT 8
+@@ -70,11 +72,25 @@ struct rdp_shadow_encoder
+ 	UINT32 maxInFlight;
+ 	UINT64 lastAckTick;
+ 	BOOL gfxHeld;
++	UINT64 gfxResumeDeadline;
++	UINT64 lastFrameSentTick;
++	UINT64 avcDrainDeadline;
++	UINT32 avcDrainRemaining;
++	ShadowStreamPacer pacer;
++	ShadowRttTracker rtt;
+ 	BOOL everAcked; /* the client acknowledged a frame at least once */
+ 	BOOL warnedNoAck;
+ 	UINT32 statsMaxInFlight;
+ 	UINT64 statsHeld;
+ 	UINT64 statsLogged;
++	UINT64 statsPublished;
++	UINT64 statsVideoBytes;
++	UINT32 statsVideoFrames;
++	UINT32 statsRefineFrames;
++	UINT64 statsLogVideoBytes;
++	UINT32 statsLogVideoFrames;
++	UINT32 statsLogRefineFrames;
++	const char* statsCodec;
+ 
+ 	/* GFX RFX dirty tile skipping (shadow_rfx_dirty.c): snapshot of the last
+ 	 * encoded content (BGRX copy sharing the surface geometry) plus per tile
+diff --git a/server/shadow/shadow_startup_pacing.h b/server/shadow/shadow_startup_pacing.h
+new file mode 100644
+index 0000000..cdb0012
+--- /dev/null
++++ b/server/shadow/shadow_startup_pacing.h
+@@ -0,0 +1,17 @@
++#ifndef SHADOW_STARTUP_PACING_H
++#define SHADOW_STARTUP_PACING_H
++#include <stdint.h>
++/* The first decoder acknowledgement marks the end of conservative startup.
++ * 0 retains FreeRDP's unlimited/no-ACK flow control configuration. */
++static inline uint32_t shadow_startup_ack_budget(uint32_t configured, int acked)
++{
++    return acked || configured <= 2 ? configured : 2;
++}
++/* Preserve the normal settled-decoder drain cadence; startup gets at most
++ * one synthetic H.264 picture per pacing pass. */
++static inline uint32_t shadow_startup_ack_drain_batch(uint32_t remaining, int acked)
++{
++    const uint32_t cap = acked ? 5 : 1;
++    return remaining < cap ? remaining : cap;
++}
++#endif
+diff --git a/server/shadow/shadow_stream_control.h b/server/shadow/shadow_stream_control.h
+new file mode 100644
+index 0000000..27d0a2c
+--- /dev/null
++++ b/server/shadow/shadow_stream_control.h
+@@ -0,0 +1,198 @@
++/* Pure-C stream pacing, FPS gating and frame-ACK RTT helpers for FreeRDP Shadow.
++ * Kept header-only so native unit tests exercise the exact production logic. */
++#ifndef SHADOW_STREAM_CONTROL_H
++#define SHADOW_STREAM_CONTROL_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++typedef struct
++{
++	uint32_t bitrate;          /* H.264 target average bitrate (bps) */
++	uint32_t maxFps;           /* Max video FPS (60 High, 15 Low) */
++	uint32_t maxInFlight;      /* Max unacknowledged RDPGFX frames */
++	uint32_t pacerBytesPerSec; /* 0 = disabled; >0 = sustained video cap (B/s) */
++	uint32_t pacerBurstBytes;  /* Token bucket burst capacity (bytes) */
++	uint32_t refineDelayMs;    /* Delay before idle still-text refinement frame */
++	uint32_t refineFrames;     /* Idle refinement frames (default 1) */
++} ShadowStreamProfile;
++
++typedef struct
++{
++	const char* codec;
++	uint32_t colorDepth;
++	uint32_t videoBytesPerSec;
++	uint32_t videoFps;
++	uint32_t refineFrames;
++	uint32_t ackRttP50Ms;
++	uint32_t ackRttP95Ms;
++	int hasAckRtt;
++	uint32_t inFlightMax;
++} ShadowStreamStats;
++
++typedef struct
++{
++	int64_t tokens;
++	uint64_t lastTickMs;
++	uint32_t rateBytesPerSec;
++	uint32_t burstBytes;
++	int initialized;
++} ShadowStreamPacer;
++
++static inline void shadow_pacer_configure(ShadowStreamPacer* pacer, uint32_t rateBytesPerSec,
++                                          uint32_t burstBytes, uint64_t nowMs)
++{
++	if (!pacer)
++		return;
++	if (rateBytesPerSec == 0)
++	{
++		pacer->rateBytesPerSec = 0;
++		pacer->burstBytes = 0;
++		pacer->tokens = 0;
++		pacer->lastTickMs = nowMs;
++		pacer->initialized = 0;
++		return;
++	}
++	if (burstBytes == 0)
++		burstBytes = rateBytesPerSec / 2u;
++	if (!pacer->initialized || pacer->rateBytesPerSec != rateBytesPerSec ||
++	    pacer->burstBytes != burstBytes)
++	{
++		pacer->rateBytesPerSec = rateBytesPerSec;
++		pacer->burstBytes = burstBytes;
++		pacer->tokens = (int64_t)burstBytes;
++		pacer->lastTickMs = nowMs;
++		pacer->initialized = 1;
++	}
++}
++
++static inline void shadow_pacer_refill(ShadowStreamPacer* pacer, uint64_t nowMs)
++{
++	if (!pacer || !pacer->initialized || pacer->rateBytesPerSec == 0)
++		return;
++	if (nowMs <= pacer->lastTickMs)
++		return;
++	uint64_t elapsed = nowMs - pacer->lastTickMs;
++	if (elapsed > 60000u)
++		elapsed = 60000u;
++	const int64_t add = (int64_t)((elapsed * (uint64_t)pacer->rateBytesPerSec) / 1000u);
++	if (add > 0)
++	{
++		pacer->tokens += add;
++		if (pacer->tokens > (int64_t)pacer->burstBytes)
++			pacer->tokens = (int64_t)pacer->burstBytes;
++		pacer->lastTickMs = nowMs;
++	}
++}
++
++/* Returns 0 if a frame may be sent immediately, else ms until tokens > 0. */
++static inline uint32_t shadow_pacer_wait_ms(ShadowStreamPacer* pacer, uint64_t nowMs)
++{
++	if (!pacer || !pacer->initialized || pacer->rateBytesPerSec == 0)
++		return 0;
++	shadow_pacer_refill(pacer, nowMs);
++	if (pacer->tokens > 0)
++		return 0;
++	const uint64_t deficit = (uint64_t)(1 - pacer->tokens);
++	uint64_t wait = (deficit * 1000u + pacer->rateBytesPerSec - 1u) / pacer->rateBytesPerSec;
++	if (wait == 0)
++		wait = 1;
++	if (wait > 2000u)
++		wait = 2000u;
++	return (uint32_t)wait;
++}
++
++static inline void shadow_pacer_consume(ShadowStreamPacer* pacer, uint32_t bytes, uint64_t nowMs)
++{
++	if (!pacer || !pacer->initialized || pacer->rateBytesPerSec == 0)
++		return;
++	shadow_pacer_refill(pacer, nowMs);
++	pacer->tokens -= (int64_t)bytes;
++	const int64_t floorTokens = -(int64_t)pacer->burstBytes * 2;
++	if (pacer->tokens < floorTokens)
++		pacer->tokens = floorTokens;
++}
++
++/* Returns 0 when the next frame may be encoded immediately, else ms to wait.
++ * First frame after >= minInterval idle always returns 0. */
++static inline uint32_t shadow_fps_wait_ms(uint64_t lastFrameTickMs, uint32_t maxFps, uint64_t nowMs)
++{
++	if (maxFps == 0 || maxFps >= 60u || lastFrameTickMs == 0)
++		return 0;
++	const uint64_t minInterval = 1000u / maxFps;
++	if (nowMs <= lastFrameTickMs)
++		return (uint32_t)minInterval;
++	const uint64_t elapsed = nowMs - lastFrameTickMs;
++	return elapsed >= minInterval ? 0u : (uint32_t)(minInterval - elapsed);
++}
++
++#define SHADOW_RTT_RING_SIZE 32u
++#define SHADOW_RTT_MAX_SAMPLES 64u
++
++typedef struct
++{
++	uint32_t frameIds[SHADOW_RTT_RING_SIZE];
++	uint64_t sentTicks[SHADOW_RTT_RING_SIZE];
++	uint32_t samples[SHADOW_RTT_MAX_SAMPLES];
++	uint32_t sampleCount;
++} ShadowRttTracker;
++
++static inline void shadow_rtt_record_send(ShadowRttTracker* rtt, uint32_t frameId, uint64_t nowMs)
++{
++	if (!rtt || frameId == 0)
++		return;
++	const uint32_t slot = frameId & (SHADOW_RTT_RING_SIZE - 1u);
++	rtt->frameIds[slot] = frameId;
++	rtt->sentTicks[slot] = nowMs;
++}
++
++static inline void shadow_rtt_record_ack(ShadowRttTracker* rtt, uint32_t frameId, uint64_t nowMs)
++{
++	if (!rtt || frameId == 0)
++		return;
++	const uint32_t slot = frameId & (SHADOW_RTT_RING_SIZE - 1u);
++	if (rtt->frameIds[slot] != frameId)
++		return;
++	const uint64_t sent = rtt->sentTicks[slot];
++	rtt->frameIds[slot] = 0;
++	if (nowMs < sent)
++		return;
++	uint64_t delta = nowMs - sent;
++	if (delta > 60000u)
++		delta = 60000u;
++	if (rtt->sampleCount < SHADOW_RTT_MAX_SAMPLES)
++		rtt->samples[rtt->sampleCount++] = (uint32_t)delta;
++}
++
++/* Computes p50 and p95 (nearest-rank) and resets the window samples. */
++static inline int shadow_rtt_summarize(ShadowRttTracker* rtt, uint32_t* p50Ms, uint32_t* p95Ms)
++{
++	if (!rtt || rtt->sampleCount == 0)
++		return 0;
++	const uint32_t n = rtt->sampleCount;
++	for (uint32_t i = 1; i < n; i++)
++	{
++		const uint32_t key = rtt->samples[i];
++		uint32_t j = i;
++		while (j > 0 && rtt->samples[j - 1] > key)
++		{
++			rtt->samples[j] = rtt->samples[j - 1];
++			j--;
++		}
++		rtt->samples[j] = key;
++	}
++	const uint32_t idx50 = (n - 1u) / 2u;
++	uint32_t idx95 = (n * 95u + 99u) / 100u;
++	if (idx95 > 0)
++		idx95 -= 1u;
++	if (idx95 >= n)
++		idx95 = n - 1u;
++	if (p50Ms)
++		*p50Ms = rtt->samples[idx50];
++	if (p95Ms)
++		*p95Ms = rtt->samples[idx95];
++	rtt->sampleCount = 0;
++	return 1;
++}
++
++#endif

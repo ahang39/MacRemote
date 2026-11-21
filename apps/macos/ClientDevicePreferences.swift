@@ -18,38 +18,46 @@ struct ClientDevicePreferences {
         }
     }
 
-    enum VideoBitrate: Int, CaseIterable {
-        case low = 1_400_000
-        case medium = 2_000_000
-        case high = 4_000_000
+    struct SessionStatus: Equatable {
+        let mode: BandwidthMode
+        let codec: String?
+        let colorDepth: Int?
+        let videoBytesPerSec: Int
+        let audioBytesPerSec: Int
+        let fps: Int
+        let ackRttMs: Int?
+        let ackRttP95Ms: Int?
+        let inFlightMax: Int
 
-        var label: String {
-            switch self {
-            case .low: "1.4"
-            case .medium: "2.0"
-            case .high: "4.0"
+        var totalBytesPerSec: Int { videoBytesPerSec + audioBytesPerSec }
+        var isLegacyColorDepth: Bool { (colorDepth ?? 32) < 32 }
+
+        var formattedRate: String {
+            let bytes = max(0, totalBytesPerSec)
+            if bytes >= 1_000_000 {
+                return String(format: "%.1f MB/s", Double(bytes) / 1_000_000.0)
             }
+            return "\(Int((Double(bytes) / 1000.0).rounded())) KB/s"
         }
     }
 
     struct ActiveClient: Equatable {
         let key: String
         let audio: Audio
-        let bitrate: VideoBitrate
+        let bandwidthMode: BandwidthMode
 
-        fileprivate init(key: String, fields: [String: Any]) {
+        fileprivate init(key: String, fields: [String: Any], fallbackMode: BandwidthMode = .high) {
             self.key = key
             audio = Audio(fields: fields)
-            bitrate = VideoBitrate.allCases.first {
-                (fields["videoBitrate"] as? NSNumber) == NSNumber(value: $0.rawValue)
-            } ?? .high
+            bandwidthMode = (fields["bandwidthMode"] as? String)
+                .flatMap(BandwidthMode.init(rawValue:)) ?? fallbackMode
         }
     }
 
     enum Change {
         case volume(Int)
         case toggleMute
-        case bitrate(VideoBitrate)
+        case bandwidth(BandwidthMode)
     }
 
     let directory: URL
@@ -87,13 +95,16 @@ struct ClientDevicePreferences {
         return (fallbackOutput, mode, (selected["uiScalePercent"] as? NSNumber)?.intValue)
     }
 
-    func activeClient(serverPID: Int32?) -> ActiveClient? {
+    func activeClient(serverPID: Int32?, defaultMode: BandwidthMode = .high) -> ActiveClient? {
         guard let serverPID, let key = clientKey(serverPID: serverPID) else { return nil }
         let profiles = try? readProfiles()
-        return ActiveClient(key: key, fields: Self.fields(for: key, in: profiles ?? [:]))
+        return ActiveClient(key: key,
+                            fields: Self.fields(for: key, in: profiles ?? [:]),
+                            fallbackMode: defaultMode)
     }
 
-    func update(_ change: Change, for key: String, serverPID: Int32) throws -> ActiveClient? {
+    func update(_ change: Change, for key: String, serverPID: Int32,
+                defaultMode: BandwidthMode = .high) throws -> ActiveClient? {
         try updateProfiles { profiles in
             guard clientKey(serverPID: serverPID) == key else { return nil }
             var fields = Self.fields(for: key, in: profiles)
@@ -102,12 +113,41 @@ struct ClientDevicePreferences {
                 fields["audioVolume"] = min(100, max(0, value))
             case .toggleMute:
                 fields["audioMuted"] = !Audio(fields: fields).muted
-            case .bitrate(let target):
-                fields["videoBitrate"] = target.rawValue
+            case .bandwidth(let mode):
+                fields["bandwidthMode"] = mode.rawValue
             }
             profiles[key] = fields
-            return ActiveClient(key: key, fields: fields)
+            return ActiveClient(key: key, fields: fields, fallbackMode: defaultMode)
         }
+    }
+
+    func sessionStatus(serverPID: Int32?) -> SessionStatus? {
+        guard let serverPID, let key = clientKey(serverPID: serverPID) else { return nil }
+        let statusURL = directory.appendingPathComponent("rdp-session.json")
+        guard let data = try? Data(contentsOf: statusURL),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              value["key"] as? String == key,
+              (value["pid"] as? NSNumber)?.int32Value == serverPID,
+              let modeName = value["mode"] as? String,
+              let mode = BandwidthMode(rawValue: modeName) else { return nil }
+
+        let codec = value["codec"] as? String
+        let depth = (value["colorDepth"] as? NSNumber)?.intValue
+        let video = max(0, (value["videoBytesPerSec"] as? NSNumber)?.intValue ?? 0)
+        let audio = max(0, (value["audioBytesPerSec"] as? NSNumber)?.intValue ?? 0)
+        let fps = max(0, (value["fps"] as? NSNumber)?.intValue ?? 0)
+        let rtt = (value["ackRttMs"] as? NSNumber)?.intValue
+        let rttP95 = (value["ackRttP95Ms"] as? NSNumber)?.intValue
+        let inFlight = max(0, (value["inFlightMax"] as? NSNumber)?.intValue ?? 0)
+        return SessionStatus(mode: mode,
+                             codec: codec,
+                             colorDepth: depth.flatMap { $0 > 0 ? $0 : nil },
+                             videoBytesPerSec: video,
+                             audioBytesPerSec: audio,
+                             fps: fps,
+                             ackRttMs: rtt,
+                             ackRttP95Ms: rttP95,
+                             inFlightMax: inFlight)
     }
 
     @discardableResult

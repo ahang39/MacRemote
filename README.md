@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><img src="https://img.shields.io/badge/release-v0.2.1--alpha-D48752" alt="v0.2.1 alpha"></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><img src="https://img.shields.io/badge/release-v0.3.0--alpha-D48752" alt="v0.3.0 alpha"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-444444?logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon-%26%20Intel-444444" alt="Apple Silicon and Intel">
   <a href="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml"><img src="https://github.com/ahang39/MacRemote/actions/workflows/source-checks.yml/badge.svg" alt="Source checks"></a>
 </p>
 <p align="center">
-  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1"><strong>Download for macOS</strong></a>
   &nbsp;·&nbsp; <a href="#get-started">Get started</a>
   &nbsp;·&nbsp; <a href="#features">Features</a>
   &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
@@ -34,27 +34,29 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 - **Use Windows' built-in client.** Open `mstsc`, connect over your LAN or VPN, and sign in with your Mac account.
 - **Keep your Mac workflow.** Native keyboard and mouse input, bidirectional text/image clipboard, and built-in compatibility for supported Karabiner-Elements basic rules.
 - **Make Retina readable.** Choose the RDP output resolution separately from the macOS HiDPI desktop. Adjust UI scale without forcing the remote video to use that same resolution.
-- **Tune video and audio per client.** VideoToolbox H.264/AVC420 with live 1.4 / 2.0 / 4.0 Mbps targets, stereo Opus remote audio, volume and mute preferences.
+- **Two clear bandwidth modes, live per device.** **High (LAN)** targets 60 fps / 8 Mbps VideoToolbox H.264 with 128 kbps stereo Opus; **Low (≤200 KB/s)** targets 200 KB/s total via 15 fps gating, VideoToolbox rate limits, a server token-bucket pacer, and 48 kbps stereo Opus; live switching and strict wire-rate enforcement await Windows validation.
 - **Less work while disconnected.** Screen and system-audio capture start when a client connects and stop after the last disconnects.
 - **A real Mac app.** Compact SwiftUI menu bar controls; self-contained binaries with pinned runtime dependencies—no Homebrew required to run the downloaded app.
 
 ## Get started
 
-**Latest preview: [v0.2.1-adhoc.1](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1)** · macOS 14 or newer.
+**Latest preview: [v0.3.0-preview.1](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1)** · macOS 14 or newer.
 
 | Your Mac | Download |
 | --- | --- |
-| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-arm64.dmg)** |
-| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.2.1-adhoc.1/MacRemote-v0.2.1-macos-x86_64.dmg)** |
+| Apple Silicon (M1, M2, M3, M4 and newer) | **[MacRemote for Apple Silicon (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-arm64.dmg)** |
+| Intel (x86_64) | **[MacRemote for Intel (.dmg)](https://github.com/ahang39/MacRemote/releases/download/v0.3.0-preview.1/MacRemote-v0.3.0-macos-x86_64.dmg)** |
 
 1. Open the DMG and drag **MacRemote.app** into **Applications**. Grant **Screen & System Audio Recording** when prompted.
 2. Start the RDP server from the menu bar (default **TCP 3389**).
-3. On Windows, launch `mstsc`, enter `MAC_IP:3389`, and authenticate with your existing macOS username and password.
+3. On Windows, open the native credentials dialog with `mstsc /prompt /v:MAC_IP:3389`. Verify the server certificate and enter your Mac account credentials. If Windows offers to remember them, later connect with `mstsc /v:MAC_IP:3389` or your saved RDP profile.
 
-These preview packages use **ad-hoc signing** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
+For diagnostics when mstsc does not prompt, use python3 tools/make-mstsc-profile.py --host MAC_IP --output MacRemote.rdp. This is not a guaranteed fix: cached credentials and policy can bypass prompting, and unsigned RDP files show an extra Windows security warning since April 2026. A zero-setup server-side solution is being evaluated (docs/qa/2026-11-19-mstsc-credential-prompt.md).
+
+These preview packages use **fixed self-signed release certificate (Ahang Open Source Release Signing)** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
 
 > [!NOTE]
-> The [v0.2.1-adhoc.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.2.1-adhoc.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
+> The [v0.3.0-preview.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
 
 ## Features
 
@@ -62,9 +64,9 @@ These preview packages use **ad-hoc signing** and are **not notarized**. If macO
 | --- | --- |
 | **Standard RDP** | Native Windows `mstsc` support, FreeRDP 3.33.1 Shadow, TLS + macOS PAM login |
 | **HiDPI display** | Separate RDP output and Mac UI scaling; 8 scale levels from 100% to 200%; reuse compatible existing HiDPI modes |
-| **Per-device settings** | Remember a client's output resolution, nominal scale, selected HiDPI mode, video target and audio preferences |
-| **H.264 video** | VideoToolbox accelerated AVC420, live bitrate selection and display/cursor coordinate handling |
-| **Remote sound** | 48 kHz stereo Opus over `rdpsnd` when negotiated by the client; remote gain and strict mute |
+| **Per-device settings** | Remember a client's output resolution, nominal scale, selected HiDPI mode, bandwidth mode (`High`/`Low`) and audio preferences |
+| **Low-latency H.264** | VideoToolbox AVC420 with rewritten zero-reorder SPS VUI, 1 s rate limits, server byte pacer in Low mode and live telemetry (KB/s, FPS, ACK RTT) |
+| **Remote sound** | 48 kHz stereo Opus over `rdpsnd` (128 kbps High / 48 kbps Low), silence suppression, remote gain and strict mute |
 | **On-demand capture** | Suspend ScreenCaptureKit video/audio capture after the last client disconnects; restart for a new client |
 | **Keyboard & mouse** | Native Quartz input and an in-process Karabiner basic-rule compatibility layer |
 | **Clipboard** | Two-way Unicode text and image transfer with PNG/DIB handling and line-ending normalization |
@@ -89,11 +91,23 @@ In a controlled Windows `mstsc` test at **2 Mbps downlink + 80 ms added RTT**, s
 
 MacRemote combines C/Objective-C server components with an AppKit/SwiftUI menu bar app. It uses existing macOS capture and input APIs, bundles its dependencies, and doesn't require a proprietary protocol or a cloud service.
 
-**Current scope:** the already logged-in desktop, rather than macOS's pre-boot/login screen. Authentication uses TLS + PAM (no NLA at present). Accelerated AVC444 remains experimental; Windows `mstsc` behavior, audio negotiation and reconnect edge cases continue to be tested.
+**Current scope:** the already logged-in macOS desktop. MacRemote verifies the Mac account using TLS + PAM. Accelerated AVC444 remains experimental. Windows `mstsc` behavior, audio negotiation and reconnect edge cases continue to be tested.
 
 Read the [architecture](docs/ARCHITECTURE.md), [technical decisions](docs/adr/), [test matrix](docs/TESTING.md), and [release checklist](docs/RELEASE_CHECKLIST.md).
 
+## Native Windows sign-in and remembered credentials
+
+Start MacRemote from the menu bar and sign in with the current Mac user's credentials. If you previously used the experimental Windows sign-in setup, use the Mac account password at the next native prompt. A distinct RDP password from the experiment will fail PAM authentication. MacRemote leaves existing enrollment files and Windows credentials in place. If Windows tries the old password, use the native prompt to update the credential for this MacRemote target.
+
+Windows and its policies control whether saved credentials are offered and reused. A client configured to require NLA cannot connect with this build. Saved-credential reuse after restarting `mstsc` and the server still requires validation on the affected managed client. See the [Windows acceptance checks](docs/TESTING.md#saved-credentials-on-windows).
+
+## Headless desktop (development build)
+
+The menu-bar app uses an automatic virtual-screen fallback **only when macOS has no online display**. Existing physical monitors and BetterDisplay-created virtual monitors are reused and never recreated or disconnected. For command-line use, add --headless to macremote serve; the default fallback size is 1920x1080, or your saved RDP output size. Requires an already logged-in macOS GUI session and Screen Recording permission. The new virtual-display backend is compiled and has passed no-op/runtime-selector tests; **real zero-monitor Windows mstsc capture is not yet validated**.
+
 ## Build from source
+
+**v0.3.0 updates:** Consolidated into two live per-device bandwidth modes (**High · LAN** and **Low · ≤200 KB/s**), rewritten low-latency H.264 SPS VUI (`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`), server-side 1 Hz throughput/FPS/ACK-RTT telemetry, and a redesigned grouped menu bar popover (see [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md)). Real Windows `mstsc` end-to-end validation is pending.
 
 On macOS 14+ with Xcode Command Line Tools, CMake, Ninja, pkg-config, Perl and Python 3:
 

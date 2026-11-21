@@ -1,16 +1,11 @@
 #ifndef MACREMOTE_RDP_GRAPHICS_H
 #define MACREMOTE_RDP_GRAPHICS_H
+
 #include <freerdp/settings.h>
 #include <stdbool.h>
 
-typedef enum {
-    MR_GFX_H264,
-    MR_GFX_AVC444,
-    MR_GFX_BALANCED,
-    MR_GFX_CLASSIC
-} MRGraphicsMode;
+/* Configure standard 32-bit RDPGFX + H.264/AVC420 (VideoToolbox).
+ * Clients connecting at <32bpp automatically fall back to legacy BitmapUpdate. */
+bool mr_gfx_configure(rdpSettings *settings);
 
-const char *mr_gfx_label(MRGraphicsMode mode);
-bool mr_gfx_parse(const char *text, MRGraphicsMode *out);
-bool mr_gfx_configure(rdpSettings *settings, MRGraphicsMode mode);
 #endif

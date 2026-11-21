@@ -1,0 +1,226 @@
+diff --git a/server/shadow/Mac/mac_capture.h b/server/shadow/Mac/mac_capture.h
+--- a/server/shadow/Mac/mac_capture.h
++++ b/server/shadow/Mac/mac_capture.h
+@@ -23,6 +23,7 @@
+ 
+ #include <CoreGraphics/CoreGraphics.h>
+ #include <CoreVideo/CoreVideo.h>
++#include "mac_capture_generation.h"
+ 
+ /* The screen as ScreenCaptureKit gives it: a C interface, so that the rest of
+  * the subsystem stays plain C. */
+@@ -31,15 +32,15 @@
+ /* Called on the capture queue for every frame that changed something. frame
+  * is a 32-bit BGRA buffer of the size asked for; the dirty rectangles are in
+  * its pixels. The frame is only valid during the call: CFRetain it to keep it. */
+-typedef void (*macCaptureFrameFn)(void *context, CVPixelBufferRef frame, const CGRect *dirty,
+-                                  size_t count);
++typedef void (*macCaptureFrameFn)(void *context, uint64_t generation,
++                                  CVPixelBufferRef frame, const CGRect *dirty, size_t count);
+ 
+ /* Called on the capture queue with interleaved 32-bit float samples. */
+ typedef void (*macCaptureAudioFn)(void *context, const float *samples, size_t frames,
+                                   UINT32 channels, UINT32 rate);
+ 
+ /* The stream stopped by itself (the display went away, permission revoked). */
+-typedef void (*macCaptureStoppedFn)(void *context);
++typedef void (*macCaptureStoppedFn)(void *context, uint64_t generation);
+ 
+ typedef struct
+ {
+@@ -55,6 +56,8 @@
+ 	macCaptureAudioFn onAudio;
+ 	macCaptureStoppedFn onStopped;
+ 	void *context;
++    const macCaptureGeneration *generationOwner;
++    uint64_t generation;
+ } macCaptureConfig;
+ 
+ #ifdef __cplusplus
+diff --git a/server/shadow/Mac/mac_capture.m b/server/shadow/Mac/mac_capture.m
+--- a/server/shadow/Mac/mac_capture.m
++++ b/server/shadow/Mac/mac_capture.m
+@@ -77,6 +77,8 @@
+ 
+ - (void)onScreen:(CMSampleBufferRef)sampleBuffer
+ {
++    if (!mr_capture_generation_current(config.generationOwner, config.generation))
++        return;
+ 	CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
+ 	if (!attachments || (CFArrayGetCount(attachments) < 1))
+ 		return;
+@@ -131,7 +133,8 @@
+ 		used = 1;
+ 	}
+ 
+-	config.onFrame(config.context, frame, rects, used);
++    if (mr_capture_generation_current(config.generationOwner, config.generation))
++        config.onFrame(config.context, config.generation, frame, rects, used);
+ 
+ 	if (rects != stackRects)
+ 		free(rects);
+@@ -139,6 +142,8 @@
+ 
+ - (void)onAudio:(CMSampleBufferRef)sampleBuffer
+ {
++    if (!mr_capture_generation_current(config.generationOwner, config.generation))
++        return;
+ 	if (!config.onAudio)
+ 		return;
+ 
+@@ -204,7 +209,9 @@
+ 		}
+ 	}
+ 
+-	config.onAudio(config.context, audioBuffer, frames, channels, (UINT32)asbd->mSampleRate);
++    if (mr_capture_generation_current(config.generationOwner, config.generation))
++        config.onAudio(config.context, audioBuffer, frames,
++                       channels, (UINT32)asbd->mSampleRate);
+ 
+ out:
+ 	if (block)
+@@ -238,11 +245,13 @@
+ {
+ 	WINPR_UNUSED(stream);
+ 	atomic_store(&stopped, true);
++    if (!mr_capture_generation_current(config.generationOwner, config.generation))
++        return;
+ 	WLog_WARN(TAG, "screen capture stopped: %s (%s %ld)",
+ 	          error ? error.localizedDescription.UTF8String : "no reason given",
+ 	          error ? error.domain.UTF8String : "-", error ? (long)error.code : 0L);
+ 	if (config.onStopped)
+-		config.onStopped(config.context);
++        config.onStopped(config.context, config.generation);
+ }
+ 
+ @end
+diff --git a/server/shadow/Mac/mac_shadow.h b/server/shadow/Mac/mac_shadow.h
+--- a/server/shadow/Mac/mac_shadow.h
++++ b/server/shadow/Mac/mac_shadow.h
+@@ -56,6 +56,7 @@
+ 	 * display is back */
+ 	macCapture *capture;
+ 	macCaptureConfig config;
++    macCaptureGeneration captureGeneration;
+ 	HANDLE lostEvent;
+ 	/* when the displays were last looked at */
+ 	UINT64 displaysChecked;
+diff --git a/server/shadow/Mac/mac_shadow.c b/server/shadow/Mac/mac_shadow.c
+--- a/server/shadow/Mac/mac_shadow.c
++++ b/server/shadow/Mac/mac_shadow.c
+@@ -697,11 +697,13 @@
+ }
+ #endif
+ 
+-static void mac_shadow_on_frame(void* context, CVPixelBufferRef frame, const CGRect* dirty,
+-                                size_t count)
++static void mac_shadow_on_frame(void* context, uint64_t generation,
++                                CVPixelBufferRef frame, const CGRect* dirty, size_t count)
+ {
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+ 	WINPR_ASSERT(mac);
++    if (!mr_capture_generation_current(&mac->captureGeneration, generation))
++        return;
+ 	if (!mac_shadow_has_clients(mac))
+ 		return;
+ 
+@@ -734,10 +736,12 @@
+ 	(void)SetEvent(mac->frameEvent);
+ }
+ 
+-static void mac_shadow_on_stopped(void* context)
++static void mac_shadow_on_stopped(void* context, uint64_t generation)
+ {
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+ 	WINPR_ASSERT(mac);
++    if (!mr_capture_generation_current(&mac->captureGeneration, generation))
++        return;
+ 
+ 	/* the subsystem thread makes a new stream once the display is back */
+ 	(void)SetEvent(mac->lostEvent);
+@@ -794,8 +798,8 @@
+ 	return (INT16)lrintf(value * (float)INT16_MAX);
+ }
+ 
+-static void mac_shadow_on_audio(void* context, const float* samples, size_t frames, UINT32 channels,
+-                                UINT32 rate)
++static void mac_shadow_on_audio(void* context, const float* samples, size_t frames,
++                                UINT32 channels, UINT32 rate)
+ {
+ 	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+ 	WINPR_ASSERT(mac);
+@@ -1204,6 +1208,7 @@
+ 	if (!CGDisplayIsActive(mac->display) || CGDisplayIsAsleep(mac->display))
+ 		return FALSE;
+ 
++    mac->config.generation = mr_capture_generation_next(&mac->captureGeneration);
+ 	mac_capture_free(mac->capture);
+ 	mac->capture = mac_capture_new(&mac->config);
+ 	if (!mac->capture)
+@@ -1277,6 +1282,7 @@
+ 	          "), %" PRIu32 "x%" PRIu32 " (was %" PRIu32 "x%" PRIu32 ")",
+ 	          ids[selected], selected, count, width, height, mac->width, mac->height);
+ 
++    (void)mr_capture_generation_next(&mac->captureGeneration);
+ 	mac_capture_stop(mac->capture);
+ 	mac_capture_free(mac->capture);
+ 	mac->capture = nullptr;
+@@ -1381,6 +1387,7 @@
+ 			}
+ 			else
+ 			{
++                (void)mr_capture_generation_next(&mac->captureGeneration);
+ 				mac_capture_free(mac->capture);
+ 				mac->capture = nullptr;
+ 				EnterCriticalSection(&mac->frameLock);
+@@ -1523,7 +1530,8 @@
+ 		                              .onFrame = mac_shadow_on_frame,
+ 		                              .onAudio = audio ? mac_shadow_on_audio : nullptr,
+ 		                              .onStopped = mac_shadow_on_stopped,
+-		                              .context = mac };
++		                              .context = mac,
++                                      .generationOwner = &mac->captureGeneration };
+ 	mac->config = config;
+ 
+ 	/* Defer SCStream allocation until an authenticated client connects. */
+@@ -1537,6 +1545,7 @@
+ 	if (!mac)
+ 		return -1;
+ 
++    (void)mr_capture_generation_next(&mac->captureGeneration);
+ 	mac_capture_free(mac->capture);
+ 	mac->capture = nullptr;
+ 
+@@ -1679,6 +1688,7 @@
+ 	if (!mac)
+ 		return nullptr;
+ 
++    atomic_init(&mac->captureGeneration.current, 0);
+ 	region16_init(&mac->pending);
+ 	if (!InitializeCriticalSectionAndSpinCount(&mac->frameLock, 4000))
+ 	{
+diff --git a/server/shadow/Mac/mac_capture_generation.h b/server/shadow/Mac/mac_capture_generation.h
+new file mode 100644
+--- /dev/null
++++ b/server/shadow/Mac/mac_capture_generation.h
+@@ -0,0 +1,20 @@
++#ifndef MAC_CAPTURE_GENERATION_H
++#define MAC_CAPTURE_GENERATION_H
++#include <stdint.h>
++#include <stdbool.h>
++#include <stdatomic.h>
++/* Generation token: retired SCK stream callbacks never affect the new stream. */
++typedef struct {
++    atomic_uint_fast64_t current;
++} macCaptureGeneration;
++static inline uint64_t mr_capture_generation_next(macCaptureGeneration* state)
++{
++    return atomic_fetch_add_explicit(&state->current, 1, memory_order_acq_rel) + 1;
++}
++static inline bool mr_capture_generation_current(const macCaptureGeneration* state,
++                                                 uint64_t token)
++{
++    return state && token != 0 &&
++        atomic_load_explicit(&state->current, memory_order_acquire) == token;
++}
++#endif

@@ -268,10 +268,10 @@ struct DisplayOutputRegression {
         try! JSONSerialization.data(withJSONObject: [first: legacy]).write(to: profile)
         connect(first)
         precondition(audio().volume == 100 && !audio().muted)
-        precondition(preferences.activeClient(serverPID: pid)?.bitrate == .high)
-        write(.bitrate(.low), for: first)
-        precondition(preferences.activeClient(serverPID: pid)?.bitrate == .low)
-        precondition(try! preferences.update(.bitrate(.medium), for: second, serverPID: pid) == nil)
+        precondition(preferences.activeClient(serverPID: pid)?.bandwidthMode == .high)
+        write(.bandwidth(.low), for: first)
+        precondition(preferences.activeClient(serverPID: pid)?.bandwidthMode == .low)
+        precondition(try! preferences.update(.bandwidth(.high), for: second, serverPID: pid) == nil)
         precondition(preferences.activeClient(serverPID: nil) == nil)
         precondition(preferences.activeClient(serverPID: pid + 1) == nil)
 
@@ -286,14 +286,38 @@ struct DisplayOutputRegression {
         precondition(try! preferences.saveDisplay(output: output, mode: mode,
                                                   previousOutput: DisplaySize(1920, 1080)))
         let stored = try! JSONSerialization.jsonObject(with: Data(contentsOf: profile))
-            as! [String: [String: NSNumber]]
-        precondition(stored[first]?["audioVolume"] == 37)
-        precondition(stored[first]?["audioMuted"] == true)
-        precondition(stored[first]?["futureField"] == 9)
-        precondition(stored[first]?["renderWidth"]?.intValue == mode.pixelWidth)
-        precondition(stored[first]?["rdpWidth"] == 2304)
+            as! [String: [String: Any]]
+        precondition(stored[first]?["audioVolume"] as? Int == 37)
+        precondition(stored[first]?["audioMuted"] as? Bool == true)
+        precondition(stored[first]?["bandwidthMode"] as? String == "low")
+        precondition(stored[first]?["futureField"] as? Int == 9)
+        precondition((stored[first]?["renderWidth"] as? NSNumber)?.intValue == mode.pixelWidth)
+        precondition(stored[first]?["rdpWidth"] as? Int == 2304)
+
+        // Verify live session telemetry reading from rdp-session.json.
+        precondition(preferences.sessionStatus(serverPID: pid) == nil)
+        let sessionURL = directory.appendingPathComponent("rdp-session.json")
+        func observe(_ properties: [String: Any]) {
+            var state: [String: Any] = ["key": first, "pid": pid, "mode": "low"]
+            state.merge(properties) { _, new in new }
+            try! JSONSerialization.data(withJSONObject: state).write(to: sessionURL, options: .atomic)
+        }
+        observe(["colorDepth": 16, "codec": "bitmap", "videoBytesPerSec": 45_000, "audioBytesPerSec": 0, "fps": 10])
+        let legacyStatus = preferences.sessionStatus(serverPID: pid)!
+        precondition(legacyStatus.isLegacyColorDepth && legacyStatus.codec == "bitmap")
+        precondition(legacyStatus.ackRttMs == nil && legacyStatus.formattedRate == "45 KB/s")
+
+        observe(["mode": "low", "codec": "h264", "colorDepth": 32,
+                 "videoBytesPerSec": 135_000, "audioBytesPerSec": 6_000,
+                 "fps": 15, "ackRttMs": 82, "ackRttP95Ms": 95, "inFlightMax": 2])
+        let activeStatus = preferences.sessionStatus(serverPID: pid)!
+        precondition(!activeStatus.isLegacyColorDepth && activeStatus.mode == .low)
+        precondition(activeStatus.totalBytesPerSec == 141_000 && activeStatus.formattedRate == "141 KB/s")
+        precondition(activeStatus.fps == 15 && activeStatus.ackRttMs == 82 && activeStatus.ackRttP95Ms == 95)
+        precondition(preferences.sessionStatus(serverPID: pid + 1) == nil)
 
         connect(second)
+        precondition(preferences.sessionStatus(serverPID: pid) == nil)
         precondition(audio().volume == 100 && !audio().muted)
         precondition(try! preferences.update(.volume(12), for: first, serverPID: pid) == nil)
         write(.volume(72), for: second)

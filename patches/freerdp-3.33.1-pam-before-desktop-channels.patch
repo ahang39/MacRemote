@@ -1,0 +1,36 @@
+diff --git a/server/shadow/shadow_client.c b/server/shadow/shadow_client.c
+--- a/server/shadow/shadow_client.c
++++ b/server/shadow/shadow_client.c
+@@ -605,15 +605,6 @@
+ 		WLog_INFO(TAG, "MacRemote: %" PRIu32 "bpp client uses BitmapUpdate", depth);
+ 	}
+ 
+-	WLog_INFO(TAG, "Client from %s is activated (%" PRIu32 "x%" PRIu32 "@%" PRIu32 ")",
+-	          peer->hostname, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+-	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
+-	          freerdp_settings_get_uint32(settings, FreeRDP_ColorDepth));
+-
+-	if (shadow_client_channels_post_connect(client) != CHANNEL_RC_OK)
+-		return FALSE;
+-
+-	shadow_client_mark_invalid(client, 0, nullptr);
+ 	authStatus = -1;
+ 
+ 	const char* Username = freerdp_settings_get_string(settings, FreeRDP_Username);
+@@ -651,6 +642,16 @@
+ 			return FALSE;
+ 		}
+ 	}
++
++	/* Start desktop channels only after the client has authenticated. */
++	if (shadow_client_channels_post_connect(client) != CHANNEL_RC_OK)
++		return FALSE;
++
++	shadow_client_mark_invalid(client, 0, nullptr);
++	WLog_INFO(TAG, "Client from %s is activated (%" PRIu32 "x%" PRIu32 "@%" PRIu32 ")",
++	          peer->hostname, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
++	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
++	          freerdp_settings_get_uint32(settings, FreeRDP_ColorDepth));
+ 
+ 	if (subsystem->ClientConnect)
+ 	{

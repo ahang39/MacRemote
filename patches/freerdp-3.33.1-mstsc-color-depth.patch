@@ -1,0 +1,75 @@
+diff --git a/server/shadow/shadow_client.c b/server/shadow/shadow_client.c
+--- a/server/shadow/shadow_client.c
++++ b/server/shadow/shadow_client.c
+@@ -36,6 +36,7 @@
+ 
+ #include "shadow.h"
+ #include "shadow_rfx_dirty.h"
++#include <freerdp/server/shadow_color_depth_compat.h>
+ 
+ #define TAG CLIENT_TAG("shadow")
+ 
+@@ -592,6 +593,18 @@
+ 			return FALSE;
+ 	}
+ 
++	/* A client's 16bpp desktop cannot receive 32bpp AVC420 or NSCodec
++	 * SurfaceBits. Treat the negotiated pixel depth as the transport
++	 * contract; for <32bpp use legacy BitmapUpdate encoding throughout. */
++	const UINT32 depth = freerdp_settings_get_uint32(settings, FreeRDP_ColorDepth);
++	if (mr_shadow_use_legacy_bitmap(depth) &&
++	    freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline))
++	{
++		if (!freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE))
++			return FALSE;
++		WLog_INFO(TAG, "MacRemote: %" PRIu32 "bpp client uses BitmapUpdate", depth);
++	}
++
+ 	WLog_INFO(TAG, "Client from %s is activated (%" PRIu32 "x%" PRIu32 "@%" PRIu32 ")",
+ 	          peer->hostname, freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+ 	          freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
+@@ -623,7 +636,12 @@
+ 
+ 		if (authStatus < 0)
+ 		{
+-			WLog_ERR(TAG, "client authentication failure: %d", authStatus);
++			/* Never log usernames or passwords. Distinguish absent ClientInfo
++			 * credentials from PAM rejecting supplied credentials. */
++			WLog_ERR(TAG,
++			         "client authentication failure: %d (ClientInfo username=%s password=%s)",
++			         authStatus, Username && Username[0] ? "present" : "missing",
++			         Password && Password[0] ? "present" : "missing");
+ 			/* Say why before the connection goes, or the client takes it for a network
+ 			 * failure and keeps reconnecting with the same wrong password. */
+ 			freerdp_set_error_info(peer->context->rdp, ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES);
+@@ -2603,7 +2621,9 @@
+ 			ret = TRUE;
+ 		}
+ 	}
+-	else if (is_surface_command_supported(settings))
++	else if (mr_shadow_use_surface_bits(
++	             freerdp_settings_get_uint32(settings, FreeRDP_ColorDepth),
++	             is_surface_command_supported(settings)))
+ 	{
+ 		WINPR_ASSERT(nXSrc >= 0);
+ 		WINPR_ASSERT(nXSrc <= UINT16_MAX);
+diff --git a/include/freerdp/server/shadow_color_depth_compat.h b/include/freerdp/server/shadow_color_depth_compat.h
+new file mode 100644
+--- /dev/null
++++ b/include/freerdp/server/shadow_color_depth_compat.h
+@@ -0,0 +1,15 @@
++/* FreeRDP shadow transport is selected from the negotiated client
++ * desktop bit depth. NSCodec and AVC420 carry 32-bit pixels only. */
++#ifndef MACREMOTE_SHADOW_COLOR_DEPTH_COMPAT_H
++#define MACREMOTE_SHADOW_COLOR_DEPTH_COMPAT_H
++#include <stdbool.h>
++#include <stdint.h>
++static inline bool mr_shadow_use_legacy_bitmap(uint32_t depth)
++{
++    return depth < 32;
++}
++static inline bool mr_shadow_use_surface_bits(uint32_t depth, bool supported)
++{
++    return !mr_shadow_use_legacy_bitmap(depth) && supported;
++}
++#endif

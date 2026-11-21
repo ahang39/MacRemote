@@ -34,12 +34,15 @@ patches=(
   freerdp-3.33.1-macremote-clipboard-hooks.patch
   freerdp-3.33.1-gfx-capability-diagnostics.patch
   freerdp-3.33.1-shadow-input-priority.patch
-  freerdp-3.33.1-h264-presentation.patch
-  freerdp-3.33.1-live-avc420-bitrate.patch
   freerdp-3.33.1-mac-cursor-feedback.patch
   freerdp-3.33.1-shadow-cert-log.patch
   freerdp-3.33.1-shadow-output-geometry.patch
   freerdp-3.33.1-idle-capture-on-demand.patch
+  freerdp-3.33.1-scaled-dirty-tiles.patch
+  freerdp-3.33.1-mac-capture-generation.patch
+  freerdp-3.33.1-mstsc-color-depth.patch
+  freerdp-3.33.1-pam-before-desktop-channels.patch
+  freerdp-3.33.1-h264-streaming.patch
 )
 patch_fingerprint="$(
   for name in "$patches[@]"; do
@@ -57,8 +60,20 @@ if [[ ! -d "$freerdp_source/.git" ]]; then
     exit 2
   fi
   mkdir -p "$build_root/sources"
-  git clone --depth 1 --branch "$version" --recurse-submodules \
-    https://github.com/FreeRDP/FreeRDP.git "$freerdp_source"
+  local_seed=""
+  for existing in "$build_root"/sources/FreeRDP-"$version"-*(N); do
+    if [[ -d "$existing/.git" ]] && \
+       [[ "$(git -C "$existing" rev-parse HEAD 2>/dev/null || true)" == "$expected_commit" ]]; then
+      local_seed="$existing"
+      break
+    fi
+  done
+  if [[ -n "$local_seed" ]]; then
+    git clone -q "$local_seed" "$freerdp_source"
+  else
+    git clone --depth 1 --branch "$version" --recurse-submodules \
+      https://github.com/FreeRDP/FreeRDP.git "$freerdp_source"
+  fi
 fi
 
 actual_commit="$(git -C "$freerdp_source" rev-parse HEAD 2>/dev/null || true)"
@@ -143,11 +158,17 @@ xcrun swiftc -O -parse-as-library -swift-version 5 \
 "$work/test-port-settings"
 
 xcrun swiftc -O -parse-as-library -swift-version 5 \
+  "$repo/apps/macos/BandwidthModeSettings.swift" \
+  "$repo/tests/test_bandwidth_mode_settings.swift" -o "$work/test-bandwidth-mode-settings"
+"$work/test-bandwidth-mode-settings"
+
+xcrun swiftc -O -parse-as-library -swift-version 5 \
   "$repo/apps/macos/DisplayModels.swift" \
   "$repo/apps/macos/DisplayModeService.swift" \
   "$repo/apps/macos/DisplayModeOperations.swift" \
   "$repo/apps/macos/DisplayConfigurationStore.swift" \
   "$repo/apps/macos/ClientDevicePreferences.swift" \
+  "$repo/apps/macos/BandwidthModeSettings.swift" \
   "$repo/apps/macos/DisplayOutputSettings.swift" \
   "$repo/tests/test_display_output_settings.swift" \
   -o "$work/test-display-output-settings"
@@ -155,6 +176,7 @@ xcrun swiftc -O -parse-as-library -swift-version 5 \
 
 xcrun swiftc -O -parse-as-library -swift-version 5 \
   "$repo/apps/macos/ServerController.swift" \
+  "$repo/apps/macos/BandwidthModeSettings.swift" \
   "$repo/apps/macos/ListenPortSettings.swift" \
   "$repo/apps/macos/ServerRestartPolicy.swift" \
   "$repo/tests/test_server_restart_policy.swift" \
@@ -199,6 +221,7 @@ xcrun swiftc -O -parse-as-library -swift-version 5 \
   "$repo/apps/macos/MacRemoteDelegate.swift" \
   "$repo/apps/macos/MacRemoteMenu.swift" \
   "$repo/apps/macos/ServerController.swift" \
+  "$repo/apps/macos/BandwidthModeSettings.swift" \
   "$repo/apps/macos/ListenPortSettings.swift" \
   "$repo/apps/macos/DisplayModels.swift" \
   "$repo/apps/macos/DisplayModeService.swift" \

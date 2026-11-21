@@ -41,6 +41,9 @@ final class MacRemoteController: ObservableObject {
     @Published var port = ListenPortSettings.load() {
         didSet { ListenPortSettings.save(port) }
     }
+    @Published var defaultBandwidthMode = BandwidthMode.load() {
+        didSet { defaultBandwidthMode.save() }
+    }
     @Published private(set) var statusText = "Checking..."
     @Published private var serverError: String?
     @Published private var readinessError: String?
@@ -52,11 +55,6 @@ final class MacRemoteController: ObservableObject {
     var servingProcessID: Int32? {
         guard case .running(let process, .recover) = lifecycle, process.isRunning else { return nil }
         return process.processIdentifier
-    }
-
-    var isServingH264: Bool {
-        guard case .running(let process, .recover) = lifecycle else { return false }
-        return process.arguments?.last == "h264"
     }
 
     private let executable: URL
@@ -109,7 +107,7 @@ final class MacRemoteController: ObservableObject {
         let available = checkReadiness()
         guard !wantsServer, serverError == nil else { return }
         statusText = available
-            ? (screenCaptureGranted == true ? "Ready · Mac account login" : "Screen Recording permission needed")
+            ? (screenCaptureGranted == true ? "Stopped" : "Screen Recording needed")
             : "Unavailable"
     }
 
@@ -139,9 +137,9 @@ final class MacRemoteController: ObservableObject {
 
         let process = Process()
         process.executableURL = executable
-        let graphics = UserDefaults.standard.string(forKey: "graphicsMode") == "classic"
-            ? "classic" : "h264"
-        process.arguments = ["serve", "--port", String(number), "--gfx", graphics]
+        // --headless is a no-op while a physical or BetterDisplay screen is present.
+        process.arguments = ["serve", "--port", String(number), "--bandwidth",
+                             defaultBandwidthMode.rawValue, "--headless"]
 
         do {
             try FileManager.default.createDirectory(
@@ -228,7 +226,7 @@ final class MacRemoteController: ObservableObject {
     func restartForOutputChange() {
         guard case .running(let process, .recover) = lifecycle else { return }
         lifecycle = .running(process, onExit: .restart)
-        statusText = "Restarting with the new RDP output…"
+        statusText = "Restarting with new output…"
         terminate(process)
     }
 

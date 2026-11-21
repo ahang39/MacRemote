@@ -1,4 +1,5 @@
 #import "device_display.h"
+#import "headless_virtual.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -144,6 +145,12 @@ void mr_device_display_restore(NSString *directory, NSDictionary *profile)
     }
     if (!chosen)
         chosen = findOutputHiDPI(directory, display, current);
+    /* Headless-created and third-party virtual screens have their own mode
+     * lifecycle. Preserve per-client RDP output size without changing them. */
+    if (chosen && mr_headless_is_virtual_display(display)) {
+        CGDisplayModeRelease(chosen);
+        chosen = NULL;
+    }
     if (chosen) {
         if (!current || CGDisplayModeGetIODisplayModeID(current) != CGDisplayModeGetIODisplayModeID(chosen)) {
             CGError result = applyPersistentDisplayMode(display, chosen);

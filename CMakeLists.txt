@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0 CACHE STRING "Minimum macOS")
-project(MacRemote VERSION 0.2.1 LANGUAGES C OBJC)
+project(MacRemote VERSION 0.3.0 LANGUAGES C OBJC)
 if(NOT APPLE)
   message(FATAL_ERROR "MacRemote requires macOS")
 endif()
@@ -58,9 +58,11 @@ target_include_directories(remote-audio PRIVATE "${src}/server/shadow/Mac")
 target_link_libraries(remote-audio PUBLIC mac-shadow PkgConfig::OPUS)
 
 add_executable(macremote
-  src/macremote.c src/graphics/rdp_graphics.c src/input/mac_clipboard.m
-  src/input/clipboard_formats.m src/display/device_display.m
+  src/macremote.c src/graphics/rdp_graphics.c src/stream/stream_profile.c
+  src/input/mac_clipboard.m src/input/clipboard_formats.m
+  src/display/device_display.m src/display/headless_virtual.m
   src/device/client_preferences.m)
+target_include_directories(macremote PRIVATE "${src}/server/shadow")
 target_link_libraries(macremote PRIVATE remote-audio ${cliprdr_objects})
 
 enable_testing()
@@ -73,6 +75,21 @@ endfunction()
 macremote_test(pointer-geometry tests/test_pointer_geometry.c)
 
 macremote_test(surface-geometry tests/test_surface_geometry.c)
+macremote_test(headless-display-policy tests/test_headless_display_policy.c)
+macremote_test(rdp-color-depth-compat tests/test_rdp_color_depth_compat.c)
+macremote_test(legacy-bitmap-16bpp-roundtrip tests/test_legacy_bitmap_16bpp_roundtrip.c)
+target_link_libraries(test-legacy-bitmap-16bpp-roundtrip PRIVATE freerdp-codecs)
+
+target_include_directories(test-rdp-color-depth-compat PRIVATE "${src}/include/freerdp/server")
+
+macremote_test(capture-generation tests/test_capture_generation.c)
+target_include_directories(test-capture-generation PRIVATE "${src}/server/shadow/Mac")
+
+macremote_test(headless-provider-noop tests/test_headless_virtual.m src/display/headless_virtual.m)
+target_link_libraries(test-headless-provider-noop PRIVATE "-framework Foundation" "-framework CoreGraphics" "-framework AppKit")
+
+target_include_directories(test-headless-display-policy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/display")
+
 target_include_directories(test-surface-geometry PRIVATE "${src}/server/shadow/Mac")
 
 macremote_test(capture-logical tests/test_capture_logical.c)
@@ -83,8 +100,9 @@ macremote_test(device-display-memory tests/test_device_display.m)
 target_link_libraries(test-device-display-memory PRIVATE
   "-framework Foundation" "-framework ApplicationServices")
 
-macremote_test(client-preferences-audio tests/test_client_preferences.m)
-target_include_directories(test-client-preferences-audio PRIVATE "${src}/server/shadow/Mac")
+macremote_test(client-preferences-audio tests/test_client_preferences.m src/stream/stream_profile.c)
+target_include_directories(test-client-preferences-audio PRIVATE
+  "${src}/server/shadow" "${src}/server/shadow/Mac")
 target_link_libraries(test-client-preferences-audio PRIVATE remote-audio "-framework Foundation")
 
 macremote_test(karabiner-modifier-flags tests/test_karabiner_modifier_flags.c)
@@ -104,12 +122,25 @@ target_link_libraries(test-clipboard-interoperability PRIVATE
 
 macremote_test(graphics-capability-modes tests/test_graphics_modes.c src/graphics/rdp_graphics.c)
 target_link_libraries(test-graphics-capability-modes PRIVATE freerdp-codecs)
+macremote_test(startup-ack-pacing tests/test_startup_ack_pacing.c)
+macremote_test(scaled-dirty-tiles tests/test_scaled_dirty_tiles.c)
+target_include_directories(test-scaled-dirty-tiles PRIVATE "${src}/server/shadow/Mac")
 
-macremote_test(avc444-real-encoder tests/test_avc444_encoder.c)
-target_link_libraries(test-avc444-real-encoder PRIVATE freerdp-codecs)
+target_include_directories(test-startup-ack-pacing PRIVATE "${src}/server/shadow")
 
-macremote_test(avc444-real-roundtrip tests/test_avc444_roundtrip.c)
-target_link_libraries(test-avc444-real-roundtrip PRIVATE freerdp-codecs)
+
+macremote_test(h264-sps-vui tests/test_h264_sps_vui.c)
+target_include_directories(test-h264-sps-vui PRIVATE "${src}/libfreerdp/codec")
+target_link_libraries(test-h264-sps-vui PRIVATE freerdp-codecs)
+
+macremote_test(stream-profile tests/test_stream_profile.c src/stream/stream_profile.c)
+target_include_directories(test-stream-profile PRIVATE "${src}/server/shadow")
+
+# Developer-only local VideoToolbox stream-profile benchmark. Excluded from normal builds/CTest.
+add_executable(bench-stream-profiles EXCLUDE_FROM_ALL
+  tools/bench-stream-profiles.c src/stream/stream_profile.c)
+target_include_directories(bench-stream-profiles PRIVATE "${src}/server/shadow")
+target_link_libraries(bench-stream-profiles PRIVATE freerdp-codecs)
 
 add_test(NAME version COMMAND macremote version)
 add_test(NAME doctor COMMAND macremote doctor)

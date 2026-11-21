@@ -7,7 +7,7 @@ See [PRD](PRD.md) for product requirements and [ADR-0001](adr/0001-protocol-stac
 
 - Mac host: **Apple Silicon (arm64) or Intel (x86_64), macOS 14+**.
 - Standard RDP clients, especially Windows `mstsc`.
-- First release attaches to the **existing, already-logged-in macOS graphical session and physical display**.
+- Supported Release baseline attaches to the **existing, already-logged-in macOS graphical session and physical display**. The development source adds an opt-in native-server virtual display fallback if there are zero registered online displays; this still needs actual no-monitor Windows mstsc acceptance.
 - Core capture, RDP, input and clipboard work without private macOS APIs or a proprietary relay. Optional manual display re-detection is isolated in a helper that uses an OS-private symbol.
 - Networking is plain IP: HY2, WireGuard, Tailscale and SSH forwarding are **external deployment choices**.
 - Prefer existing OSS protocol libraries, not a new RDP protocol implementation.
@@ -47,19 +47,21 @@ needed.
 
 | Module | Ownership |
 | --- | --- |
-| SwiftUI app / menu delegate | Native status item, popover and user interaction |
-| ServerController | Child-process lifecycle, terminal failures and bounded restart policy |
+| SwiftUI app / menu delegate | Native status item, grouped popover cards, live session telemetry and user interaction |
+| ServerController | Child-process lifecycle, default bandwidth mode, terminal failures and bounded restart policy |
 | DisplayOutputSettings | User choices, effective scale state and visible status |
 | DisplayModeService / DisplayModeOperations | CoreGraphics mode discovery and explicitly authorized helper execution |
 | DisplayConfigurationStore | Output selection and capture-geometry file persistence |
-| ClientDevicePreferences | Per-device output, HiDPI mode, volume, and mute. Locked field updates to the existing `display-by-client.json` |
-| src/macremote.c | CLI, server bootstrap and FreeRDP input hooks |
-| src/device/client_preferences.m | Primary client ownership, remembered profile loading, and effective audio volume |
+| ClientDevicePreferences | Per-device output, HiDPI mode, bandwidth mode (`high`/`low`), volume, mute and `rdp-session.json` telemetry |
+| src/macremote.c | CLI, server bootstrap, stream hooks and FreeRDP input hooks |
+| src/stream/stream_profile.c | Single source of truth for High (LAN) and Low (≤200 KB/s WAN) video/audio/pacing budgets |
+| src/device/client_preferences.m | Primary client ownership, remembered profile loading, live stream/audio profile updates and 1 Hz telemetry |
 | src/display/device_display.m | Restores remembered display modes and publishes capture geometry |
-| src/audio/remote_audio.c | Remote gain, Opus encoding and mute enforcement at the `rdpsnd` send boundary |
+| src/audio/remote_audio.c | Remote gain, dynamic 128/48 kbps stereo Opus encoding, mute enforcement and byte accounting |
 | src/input/mac_clipboard.m | CLIPRDR sessions, advertised snapshots and one in-flight format request per client |
 | src/input/clipboard_formats.m | UTF-16/CRLF text and PNG/DIB codec boundary |
-| src/graphics/rdp_graphics.c | Graphics policy and encoder integration |
+| src/graphics/rdp_graphics.c | Standard 32-bit RDPGFX + H.264/AVC420 session configuration |
+| patches/freerdp-3.33.1-h264-streaming.patch | Low-latency SPS VUI rewrite, VideoToolbox DataRateLimits, byte pacer, FPS gate and ACK RTT telemetry |
 | patches/freerdp-3.33.1-shadow-output-geometry.patch | Version-controlled FreeRDP 3.33.1 display geometry integration |
 
 The fixed RDP surface is selected at server startup. CoreGraphics logical
@@ -84,11 +86,13 @@ fields default to 100% and unmuted. A muted slider edit updates the level
 that will be restored on unmute.
 
 The server watches the configuration directory for atomic replacements and
-applies effective audio settings in the audio module. ScreenCaptureKit supplies
-48 kHz stereo PCM. The module ramps gain over 5 ms and encodes one 640-byte
-Opus packet per 20 ms of active audio at a fixed 256 kbps. Shadow queues
-the encoded packets and `rdpsnd` sends them as Wave2 PDUs. Clients must
-negotiate Opus and support Wave2 to receive audio.
+applies effective audio and bandwidth settings live. ScreenCaptureKit supplies
+48 kHz stereo PCM. The audio module ramps gain over 5 ms and encodes one 20 ms
+CBR Opus packet at **128 kbps** (320 B, High mode) or **48 kbps** (120 B, Low
+mode), suppressing packets after 200 ms of silence. Shadow queues the encoded
+packets and `rdpsnd` sends them as Wave2 PDUs. Clients must negotiate Opus and
+support Wave2 to receive audio. See [ADR-0012](adr/0012-bandwidth-profiles-and-low-latency-h264.md)
+for the unified High/Low streaming architecture and low-latency SPS VUI rewrite.
 
 Mute and 0% stop submitting audio payloads to `rdpsnd` as soon as the new
 setting takes effect. The send boundary discards queued packets from earlier
@@ -99,7 +103,8 @@ can drain, and RDP channel control messages can still be exchanged.
 ## 4. Security boundary
 
 FreeRDP's macOS Shadow PAM callback validates the process owner's Mac
-account over TLS, with NLA disabled (ADR-0007). The server attaches to the
+account over TLS, with NLA disabled (ADR-0007). Shadow initializes the
+desktop channels only after PAM succeeds. The server attaches to the
 existing logged-in desktop, uses macOS TCC grants for capture, and injects
 input through Quartz. Default listener binding is all interfaces on TCP 3389;
 the CLI and GUI allow a custom port, and the CLI supports an explicit bind IP.

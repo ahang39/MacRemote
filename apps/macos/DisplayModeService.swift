@@ -5,6 +5,12 @@ import Darwin
 struct DisplayModeService {
     // WindowServer can revert a transient CGDisplaySetDisplayMode call.
     func applyPersistentMode(_ mode: CGDisplayMode) -> CGError {
+        let display = CGMainDisplayID()
+        // BetterDisplay/other virtual display modes belong to their creator.
+        let isVirtual = CGDisplayModelNumber(display) == 0x76697274 ||
+            (CGDisplayVendorNumber(display) == 0x4d52 &&
+             CGDisplayModelNumber(display) == 0x4844)
+        if isVirtual { return .failure }
         var config: CGDisplayConfigRef?
         let begun = CGBeginDisplayConfiguration(&config)
         guard begun == .success, let config else {

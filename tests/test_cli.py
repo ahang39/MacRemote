@@ -5,9 +5,11 @@ import subprocess
 import sys
 import tempfile
 
+
 def run(binary, *args, env):
     return subprocess.run([binary, *args], capture_output=True,
                           text=True, env=env, timeout=8)
+
 
 def main():
     binary = sys.argv[1]
@@ -21,18 +23,19 @@ def main():
         assert data["max_clients"] is None
         assert data["default_bind"] == "0.0.0.0"
         assert data["default_port"] == 3389
+        assert data["default_bandwidth"] == "high"
         assert data["account"] not in ("", "macremote", "unknown")
         assert "paired" not in data
-        print("PASS status: native Mac login, TLS/PAM, full remote control, no pairing")
+        print("PASS status: native Mac login, TLS/PAM, high bandwidth default")
 
         version = run(binary, "version", env=env)
         assert version.returncode == 0 and "FreeRDP" in version.stdout
         doctor = run(binary, "doctor", env=env)
         assert doctor.returncode == 0 and "Mac login account" in doctor.stdout
         help_result = run(binary, "--help", env=env)
-        assert (help_result.returncode == 0 and "--gfx" in help_result.stdout
-                and "avc444" in help_result.stdout)
-        print("PASS version, doctor and graphics profiles")
+        assert (help_result.returncode == 0 and "--bandwidth" in help_result.stdout
+                and "--gfx" not in help_result.stdout)
+        print("PASS version, doctor and simplified bandwidth CLI")
 
         for port in ("0", "65536", "-1", "x", "3389oops", ""):
             result = run(binary, "serve", "--port", port, env=env)
@@ -45,18 +48,21 @@ def main():
             assert result.returncode == 2, (address, result.stderr)
         print("PASS listen-IP validation")
 
-        for profile in ("bad", "", "AVC444", "auto"):
-            result = run(binary, "serve", "--gfx", profile, env=env)
-            assert result.returncode == 2, (profile, result.stderr)
-        print("PASS unsupported graphics profiles rejected")
+        for mode in ("bad", "", "HIGH", "auto", "medium"):
+            result = run(binary, "serve", "--bandwidth", mode, env=env)
+            assert result.returncode == 2, (mode, result.stderr)
+        print("PASS unsupported bandwidth modes rejected")
 
-        for args in (["pair"], ["pair", "--reset"], ["serve", "--unknown"],
+        for args in (["pair"], ["pair", "--reset"], ["enroll-nla"],
+                     ["setup-windows-login"], ["serve", "--unknown"],
+                     ["serve", "--gfx", "h264"], ["serve", "--compat-graphics"],
                      ["serve", "--bind"], ["serve", "--port"],
-                     ["doctor", "--json"]):
+                     ["serve", "--bandwidth"], ["doctor", "--json"]):
             result = run(binary, *args, env=env)
             assert result.returncode == 2, (args, result.stderr)
-        print("PASS removed pairing and obsolete options")
+        print("PASS removed legacy options rejected")
     print("PASS all CLI regression checks")
+
 
 if __name__ == "__main__":
     main()
