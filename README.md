@@ -23,9 +23,9 @@
 </p>
 
 <p align="center">
-  <a href="docs/assets/macremote-settings.png"><img src="docs/assets/macremote-settings.png" width="420" alt="Actual MacRemote menu bar app showing RDP output, HiDPI scaling, H.264 target bitrate and remote audio controls"></a>
+  <a href="docs/assets/macremote-settings.png"><img src="docs/assets/macremote-settings.png" width="380" alt="Actual MacRemote menu bar app showing live session telemetry, High/Low bandwidth modes, remote audio, RDP output and HiDPI scaling"></a>
 </p>
-<p align="center"><sub>Real macOS menu bar interface · Personal account details blurred</sub></p>
+<p align="center"><sub>Real macOS menu bar interface · Live LAN session · Personal account details blurred</sub></p>
 
 ## Why MacRemote?
 
@@ -53,7 +53,7 @@ Windows already has an excellent RDP client. MacRemote gives your **existing, lo
 
 For diagnostics when mstsc does not prompt, use python3 tools/make-mstsc-profile.py --host MAC_IP --output MacRemote.rdp. This is not a guaranteed fix: cached credentials and policy can bypass prompting, and unsigned RDP files show an extra Windows security warning since April 2026. A zero-setup server-side solution is being evaluated (docs/qa/2026-11-19-mstsc-credential-prompt.md).
 
-These preview packages use **fixed self-signed release certificate (Ahang Open Source Release Signing)** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
+These preview packages use a **fixed self-signed release certificate (`Ahang Open Source Release Signing`)** and are **not notarized**. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**. When upgrading from earlier `v0.2.x` ad-hoc builds, macOS may ask you to remove and re-grant **Screen & System Audio Recording** (and **Accessibility**) once because the signing identity changed; future updates signed with the same release certificate will keep a consistent identity. Connect over a trusted private network or VPN; don't expose TCP 3389 directly to the Internet.
 
 > [!NOTE]
 > The [v0.3.0-preview.1 release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) and its source archives are published from the same source revision as the attached DMGs. The older v0.2.0 release tag remains unchanged.
@@ -77,13 +77,22 @@ These preview packages use **fixed self-signed release certificate (Ahang Open S
 MacRemote separates **transport pixels** from **macOS logical desktop pixels**. Pick an RDP output such as 1920 × 1080, then choose **100%, 105%, 110%, 120%, 135%, 150%, 175% or 200%** Mac UI scaling. It reuses matching existing HiDPI modes; a missing mode can be created on demand and loaded after a macOS restart.
 
 <p align="center">
-  <a href="docs/assets/macremote-hidpi-scales.png"><img src="docs/assets/macremote-hidpi-scales.png" width="420" alt="MacRemote's actual 8-level HiDPI scaling menu"></a>
+  <a href="docs/assets/macremote-hidpi-scales.png"><img src="docs/assets/macremote-hidpi-scales.png" width="380" alt="MacRemote's actual 8-level HiDPI scaling menu"></a>
 </p>
-<p align="center"><sub>Eight scaling levels, showing the actual resolved HiDPI sizes</sub></p>
+<p align="center"><sub>Eight non-linear scaling levels, showing the actual resolved HiDPI sizes</sub></p>
 
-### Built with real-client measurements
+### High (LAN) & Low (≤200 KB/s WAN) bandwidth modes
 
-In a controlled Windows `mstsc` test at **2 Mbps downlink + 80 ms added RTT**, switching the AVC420 video target from **4.0 to 1.4 Mbps** reduced the median scrolling downlink volume by **44%** and the first visible scrolling feedback from **3.30 s to 0.99 s**. The measurement used a synthetic scrolling workload; see the [test setup and results](docs/qa/2026-11-17-mstsc-wan.md).
+MacRemote uses a single hardware-accelerated **VideoToolbox H.264/AVC420** pipeline with low-latency SPS VUI signaling (`max_num_reorder_frames=0`, `max_dec_frame_buffering=1`) and two live per-device bandwidth modes—switchable mid-session without disconnecting:
+
+| Mode | Video | Audio (stereo Opus) | Flow control |
+| --- | --- | --- | --- |
+| **High · LAN** *(default)* | Up to **60 fps** · **8.0 Mbps** avg (`DataRateLimits` 1.2×/1 s) | **128 kbps** (16 KB/s) | 6 frames in flight, uncapped pacer |
+| **Low · ≤200 KB/s** | Up to **15 fps** · **1.05 Mbps** avg (`DataRateLimits` 1.2×/1 s) | **48 kbps** (6 KB/s) | **155 KB/s** token-bucket video pacer, 3 frames in flight |
+
+Clients negotiating `<32-bit` color automatically fall back to legacy RDP `BitmapUpdate`. The menu bar displays real 1 Hz server telemetry (outbound KB/s, sent FPS, and RDPGFX frame-ACK RTT). See [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md) and the [local hardware VideoToolbox benchmark](docs/qa/2026-11-21-bandwidth-profiles-refactor.md).
+
+In an earlier controlled Windows `mstsc` test at **2 Mbps downlink + 80 ms added RTT**, lowering the AVC420 target from **4.0 to 1.4 Mbps** reduced median scrolling downlink volume by **44%** and first visible scrolling feedback from **3.30 s to 0.99 s** ([test setup and results](docs/qa/2026-11-17-mstsc-wan.md)).
 
 ## Under the hood
 
@@ -91,7 +100,7 @@ In a controlled Windows `mstsc` test at **2 Mbps downlink + 80 ms added RTT**, s
 
 MacRemote combines C/Objective-C server components with an AppKit/SwiftUI menu bar app. It uses existing macOS capture and input APIs, bundles its dependencies, and doesn't require a proprietary protocol or a cloud service.
 
-**Current scope:** the already logged-in macOS desktop. MacRemote verifies the Mac account using TLS + PAM. Accelerated AVC444 remains experimental. Windows `mstsc` behavior, audio negotiation and reconnect edge cases continue to be tested.
+**Current scope:** the already logged-in macOS desktop, verified with macOS TLS + PAM. Standard 32-bit clients stream hardware VideoToolbox H.264/AVC420 while `<32-bit` clients automatically use legacy `BitmapUpdate`. Windows `mstsc` WAN acceptance under 200 KB/s shaping, audio negotiation, and reconnect edge cases continue to be tested.
 
 Read the [architecture](docs/ARCHITECTURE.md), [technical decisions](docs/adr/), [test matrix](docs/TESTING.md), and [release checklist](docs/RELEASE_CHECKLIST.md).
 

@@ -23,9 +23,9 @@
 </p>
 
 <p align="center">
-  <a href="docs/assets/macremote-settings.png"><img src="docs/assets/macremote-settings.png" width="420" alt="MacRemote 真实菜单栏界面：RDP 分辨率、HiDPI 缩放、视频码率与远程音量"></a>
+  <a href="docs/assets/macremote-settings.png"><img src="docs/assets/macremote-settings.png" width="380" alt="MacRemote 真实菜单栏界面：实时会话速率与延迟、高/低带宽模式、远程音量、RDP 输出分辨率与 HiDPI 缩放"></a>
 </p>
-<p align="center"><sub>真实 macOS 菜单栏界面 · 本机账户信息已模糊处理</sub></p>
+<p align="center"><sub>真实 macOS 菜单栏界面 · 内网实时连接状态 · 本机账户信息已模糊处理</sub></p>
 
 ## 为什么选择 MacRemote？
 
@@ -53,7 +53,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 
 如果 mstsc 不弹密码框，可用 python3 tools/make-mstsc-profile.py --host Mac的IP --output MacRemote.rdp 做诊断，但客户端缓存和策略可能阻止弹框；2026 年 4 月后未签名 .rdp 文件还会增加发布者警告。零配置方案仍在验证，见 docs/qa/2026-11-19-mstsc-credential-prompt.md。
 
-当前 DMG 使用 **固定自签名发布证书（Ahang Open Source Release Signing），尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
+当前 DMG 使用**固定自签名发布证书（`Ahang Open Source Release Signing`），尚未经过 Apple 公证**。首次启动被阻止时，在「系统设置 → 隐私与安全性 → 仍要打开」中允许。从旧版 `v0.2.x`（Ad-hoc 签名）升级时，由于代码签名身份变化，macOS 可能需要你在隐私设置中先移除再重新勾选一次「屏幕与系统音频录制」（以及「辅助功能」）；后续同证书更新可保持身份稳定，通常不再需要重复授权。建议通过可信局域网或 VPN 使用，不要把 RDP 端口直接暴露到公网。
 
 > [!NOTE]
 > [v0.3.0-preview.1 Release](https://github.com/ahang39/MacRemote/releases/tag/v0.3.0-preview.1) 的源码压缩包与安装包对应同一源码版本。旧 v0.2.0 标签保留历史状态，不再修改。
@@ -77,13 +77,22 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 比如 RDP 输出选择 **1920 × 1080**，Mac 界面可以单独选择 **100%、105%、110%、120%、135%、150%、175%、200%**。能复用现有 HiDPI 模式就直接复用；缺少的分辨率按需创建，重启 macOS 加载后再应用。
 
 <p align="center">
-  <a href="docs/assets/macremote-hidpi-scales.png"><img src="docs/assets/macremote-hidpi-scales.png" width="420" alt="MacRemote 八档 HiDPI 缩放下拉菜单实拍"></a>
+  <a href="docs/assets/macremote-hidpi-scales.png"><img src="docs/assets/macremote-hidpi-scales.png" width="380" alt="MacRemote 八档 HiDPI 缩放下拉菜单实拍"></a>
 </p>
 <p align="center"><sub>八档非线性缩放，菜单中直接显示实际对应的 HiDPI 分辨率</sub></p>
 
-### 弱网优化有实测数据
+### 高带宽（内网）与低带宽（≤200 KB/s 外网）双档
 
-一次真实 Windows `mstsc` 对照实验，在**下行 2 Mbps、额外 80 ms RTT** 的条件下，将 AVC420 编码目标由 **4.0 降至 1.4 Mbps**，五秒合成滚动场景的下行流量中位数**减少 44%**，第一次滚动画面反馈从 **3.30 秒降至 0.99 秒**。数据来自受控测试场景，环境和逐轮数据见[完整测试记录](docs/qa/2026-11-17-mstsc-wan.md)。
+MacRemote 统一使用硬件加速的 **VideoToolbox H.264/AVC420** 管线，通过改写 SPS VUI（`max_num_reorder_frames=0`、`max_dec_frame_buffering=1`）消除解码端多帧缓存，并提供两档按设备记忆、在线实时切换的带宽模式（切换不断连）：
+
+| 模式 | 视频流 | 远程音频（立体声 Opus） | 流量控制 |
+| --- | --- | --- | --- |
+| **High · LAN**（新设备默认） | 最高 **60 fps** · **8.0 Mbps** 平均码率（1 秒峰值限速 1.2×） | **128 kbps**（16 KB/s） | 最多 6 帧在途，不限速 |
+| **Low · ≤200 KB/s** | 最高 **15 fps** · **1.05 Mbps** 平均码率（1 秒峰值限速 1.2×） | **48 kbps**（6 KB/s） | **155 KB/s** 服务端令牌桶限流，最多 3 帧在途 |
+
+协商 `<32` 位色的客户端会自动退回经典 `BitmapUpdate` 兼容路径。菜单栏每秒刷新真实服务端发送速率（KB/s）、发送 FPS 与 RDPGFX 帧确认 RTT。详见 [ADR-0012](docs/adr/0012-bandwidth-profiles-and-low-latency-h264.md) 与 [本机硬件 VideoToolbox 基准实测](docs/qa/2026-11-21-bandwidth-profiles-refactor.md)。
+
+早期真实 Windows `mstsc` 对照实验（**下行 2 Mbps、额外 80 ms RTT**）显示，降低 AVC420 编码目标（4.0 → 1.4 Mbps）可使五秒滚动下行流量中位数**减少 44%**、首次滚动反馈从 **3.30 秒降至 0.99 秒**（[完整测试记录](docs/qa/2026-11-17-mstsc-wan.md)）。
 
 ## 技术架构
 
@@ -91,7 +100,7 @@ Windows 本来就自带好用的远程桌面。MacRemote 做的事情很直接�
 
 服务端使用 C/Objective-C，界面使用 AppKit/SwiftUI；没有自定义远控协议，不需要云账号或额外常驻中转服务。第三方依赖固定版本并打包进 App。
 
-**当前范围：**连接 Mac 已登录的桌面，使用 TLS + PAM 验证 Mac 账号。AVC444 仍属实验性模式。不同客户端的音频协商、输入法和重连边界持续实测优化。
+**当前范围：**连接 Mac 已登录的桌面，使用 TLS + PAM 验证 Mac 账号。32 位色客户端统一走硬件 VideoToolbox H.264/AVC420，`<32` 位色客户端自动降级为 `BitmapUpdate`。200 KB/s 限速下的真实外网 `mstsc` 验收、音频协商和重连边界持续实测优化。
 
 更多细节：[技术架构](docs/ARCHITECTURE.md) · [设计决策](docs/adr/) · [测试矩阵](docs/TESTING.md) · [发布清单](docs/RELEASE_CHECKLIST.md)。
 
